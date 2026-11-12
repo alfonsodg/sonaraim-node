@@ -1,10 +1,10 @@
 //! Lightweight std-only HTTP/1.1 REST server for `sonaraim-node`.
-//! Exposes `/health`, `/metrics`, `/v1/identity`, `/v1/identity/{did}`, `/v1/relay/envelopes`,
-//! `/v1/relay/mailboxes/{mailbox_id}`, `/v1/media/presign`, `/v1/contacts/psi`,
-//! `/v1/identity/anchors/latest`, and `/v1/p2p/gossip`.
 
 use crate::config::NodeConfig;
 use crate::health::HealthStatus;
+use crate::http_auth::{
+    err_json, is_protected_write_route, parse_http_request, verify_bearer_token,
+};
 use crate::merkle::{IdentityLogEntry, KeyTransparencyLog};
 use crate::p2p::P2pMeshNode;
 use crate::psi_service::{build_l2_anchor_receipt, handle_presign_json, handle_psi_json};
@@ -25,19 +25,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// Shared mutable state for a running `sonaraim-node` HTTP server.
 #[derive(Debug)]
 pub struct NodeState {
-    /// Validated node configuration.
     pub config: NodeConfig,
-    /// Ephemeral store-and-forward mailbox queues.
     pub relay: MailboxStore,
-    /// Append-only Key Transparency Merkle log.
     pub kt_log: KeyTransparencyLog,
-    /// Lookup index from DID string to latest [`IdentityLogEntry`].
     pub did_index: HashMap<String, IdentityLogEntry>,
-    /// P2P mesh gossip state tracking peer `SignedTreeHead` epochs.
     pub p2p_mesh: P2pMeshNode,
-    /// Optional durable Write-Ahead Log file path.
     pub wal_path: Option<PathBuf>,
-    /// Optional Redis RESP client for mailbox TTL persistence.
     pub redis: Option<RedisRespClient>,
 }
 
@@ -117,15 +110,13 @@ fn handle_connection(
         return Ok(());
     }
     let raw = String::from_utf8_lossy(&buf[..n]);
-    let (head, body) = raw.split_once("\r\n\r\n").unwrap_or((&raw, ""));
-    let mut first = head.lines().next().unwrap_or("").split_whitespace();
-    let (method, path) = (first.next().unwrap_or(""), first.next().unwrap_or(""));
+    let (method, path, headers, body) = parse_http_request(&raw);
     let ctype = if path == "/metrics" {
         "text/plain; version=0.0.4"
     } else {
         "application/json"
     };
-    let (status, reason, resp) = dispatch(method, path, body, shared);
+    let (status, reason, resp) = dispatch(&method, &path, &headers, &body, shared);
     let reply = format!(
         "HTTP/1.1 {status} {reason}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{resp}",
         resp.len()
@@ -136,6 +127,7 @@ fn handle_connection(
 fn dispatch(
     method: &str,
     path: &str,
+    headers: &str,
     body: &str,
     shared: &Arc<Mutex<NodeState>>,
 ) -> (u16, &'static str, String) {
@@ -146,6 +138,15 @@ fn dispatch(
             err_json("LOCK_ERROR", "lock poisoned"),
         );
     };
+    if is_protected_write_route(method, path)
+        && !verify_bearer_token(headers, st.config.api_auth_token.as_deref())
+    {
+        return (
+            401,
+            "Unauthorized",
+            err_json("UNAUTHORIZED", "invalid Bearer token"),
+        );
+    }
     match (method, path) {
         ("GET", "/health") => {
             let h = HealthStatus::from_state(&st.config, &st.relay, &st.kt_log).to_json();
@@ -163,23 +164,7 @@ fn dispatch(
             (200, "OK", r.to_json())
         }
         ("GET", p) if p.starts_with("/v1/identity/") => {
-            let did = &p["/v1/identity/".len()..];
-            match st.did_index.get(did) {
-                Some(e) => {
-                    let b2b = e.did.starts_with("did:web:");
-                    let th = st.kt_log.tree_head();
-                    let j = format!(
-                        "{{\"did\":\"{}\",\"verified_b2b\":{b2b},\"leaf_hash\":\"{}\",\"tree_head\":\"{th}\"}}",
-                        e.did, e.leaf_hash
-                    );
-                    (200, "OK", j)
-                }
-                None => (
-                    404,
-                    "Not Found",
-                    err_json("NOT_FOUND", "DID not registered"),
-                ),
-            }
+            handle_get_identity(&st, &p["/v1/identity/".len()..])
         }
         ("POST", "/v1/relay/envelopes") => handle_post_envelope(&mut st, body),
         ("GET", p) if p.starts_with("/v1/relay/mailboxes/") => {
@@ -202,6 +187,24 @@ fn dispatch(
             "Not Found",
             err_json("ROUTE_NOT_FOUND", "unknown route or method"),
         ),
+    }
+}
+
+fn handle_get_identity(st: &NodeState, did: &str) -> (u16, &'static str, String) {
+    if let Some(e) = st.did_index.get(did) {
+        let b2b = e.did.starts_with("did:web:");
+        let th = st.kt_log.tree_head();
+        let j = format!(
+            "{{\"did\":\"{}\",\"verified_b2b\":{b2b},\"leaf_hash\":\"{}\",\"tree_head\":\"{th}\"}}",
+            e.did, e.leaf_hash
+        );
+        (200, "OK", j)
+    } else {
+        (
+            404,
+            "Not Found",
+            err_json("NOT_FOUND", "DID not registered"),
+        )
     }
 }
 
@@ -292,8 +295,4 @@ fn handle_post_envelope(st: &mut NodeState, body: &str) -> (u16, &'static str, S
         "Accepted",
         format!("{{\"wake_up_token\":\"{token}\"}}"),
     )
-}
-
-fn err_json(code: &str, message: &str) -> String {
-    format!("{{\"error\":{{\"code\":\"{code}\",\"message\":\"{message}\"}}}}")
 }

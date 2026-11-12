@@ -49,6 +49,8 @@ pub struct NodeConfig {
     pub p2p_listen_addr: String,
     /// Time-to-live in seconds for queued sealed envelopes.
     pub envelope_ttl_seconds: u64,
+    /// Optional operator/relay Bearer token for write endpoints (`NODE_API_AUTH_TOKEN`).
+    pub api_auth_token: Option<String>,
 }
 
 impl NodeConfig {
@@ -65,6 +67,7 @@ impl NodeConfig {
             "NODE_HTTP_PORT",
             "NODE_P2P_LISTEN_ADDR",
             "NODE_ENVELOPE_TTL_SECONDS",
+            "NODE_API_AUTH_TOKEN",
         ] {
             if let Ok(val) = env::var(key) {
                 vars.insert(key.to_string(), val);
@@ -74,10 +77,6 @@ impl NodeConfig {
     }
 
     /// Loads and validates [`NodeConfig`] from an explicit key-value map.
-    ///
-    /// # Parameters
-    ///
-    /// - `vars`: Map of environment variable names to raw string values.
     ///
     /// # Errors
     ///
@@ -123,12 +122,18 @@ impl NodeConfig {
             });
         }
 
+        let api_auth_token = vars
+            .get("NODE_API_AUTH_TOKEN")
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
         Ok(Self {
             node_id,
             http_host,
             http_port,
             p2p_listen_addr,
             envelope_ttl_seconds,
+            api_auth_token,
         })
     }
 
