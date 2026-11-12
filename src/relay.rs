@@ -78,6 +78,58 @@ impl MailboxStore {
             .collect()
     }
 
+    /// Returns active envelopes for `mailbox_id` without removing them.
+    #[must_use]
+    pub fn get_active(&self, mailbox_id: &str, now_epoch_secs: u64) -> Vec<SealedEnvelope> {
+        let ttl = self.ttl_seconds;
+        let Some(entries) = self.queues.get(mailbox_id) else {
+            return Vec::new();
+        };
+        entries
+            .iter()
+            .filter(|env| !env.is_expired(ttl, now_epoch_secs))
+            .cloned()
+            .collect()
+    }
+
+    /// Acknowledges and removes envelopes matching `envelope_ids` (or all if empty) for `mailbox_id`.
+    /// Returns the number of removed envelopes.
+    pub fn ack(&mut self, mailbox_id: &str, envelope_ids: &[String]) -> usize {
+        let Some(list) = self.queues.get_mut(mailbox_id) else {
+            return 0;
+        };
+        let before = list.len();
+        if envelope_ids.is_empty() {
+            list.clear();
+        } else {
+            list.retain(|env| !envelope_ids.iter().any(|id| id == &env.envelope_id));
+        }
+        let removed = before.saturating_sub(list.len());
+        if list.is_empty() {
+            self.queues.remove(mailbox_id);
+        }
+        removed
+    }
+
+    /// Returns active `(envelope_id, recipient_mailbox_id, payload_hex)` tuples across all queues.
+    #[must_use]
+    pub fn all_active_tuples(&self, now_epoch_secs: u64) -> Vec<(String, String, String)> {
+        let ttl = self.ttl_seconds;
+        let mut out = Vec::new();
+        for list in self.queues.values() {
+            for env in list {
+                if !env.is_expired(ttl, now_epoch_secs) {
+                    out.push((
+                        env.envelope_id.clone(),
+                        env.recipient_mailbox_id.clone(),
+                        String::from_utf8_lossy(&env.ciphertext).to_string(),
+                    ));
+                }
+            }
+        }
+        out
+    }
+
     /// Purges expired envelopes across all mailboxes at `now_epoch_secs` and returns
     /// the number of evicted envelopes.
     pub fn purge_expired(&mut self, now_epoch_secs: u64) -> usize {

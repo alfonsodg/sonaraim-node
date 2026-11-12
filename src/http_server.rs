@@ -5,11 +5,12 @@ use crate::health::HealthStatus;
 use crate::http_auth::{
     err_json, is_protected_write_route, parse_http_request, verify_bearer_token,
 };
+use crate::http_relay::{handle_ack_mailbox, handle_get_mailbox, handle_post_envelope};
 use crate::merkle::{IdentityLogEntry, KeyTransparencyLog};
 use crate::p2p::P2pMeshNode;
 use crate::psi_service::{build_l2_anchor_receipt, handle_presign_json, handle_psi_json};
 use crate::redis_store::RedisRespClient;
-use crate::relay::{MailboxStore, SealedEnvelope};
+use crate::relay::MailboxStore;
 use crate::storage::{
     append_wal_entry, extract_json_str, replay_wal_into_log, wal_path_from_signing_key, WalEntry,
 };
@@ -94,7 +95,9 @@ pub fn run_server(state: NodeState) -> Result<(), std::io::Error> {
     Ok(())
 }
 
-fn now_secs() -> u64 {
+/// Returns current epoch seconds.
+#[must_use]
+pub fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(1_700_000_000, |d| d.as_secs())
@@ -167,18 +170,13 @@ fn dispatch(
             handle_get_identity(&st, &p["/v1/identity/".len()..])
         }
         ("POST", "/v1/relay/envelopes") => handle_post_envelope(&mut st, body),
+        ("POST", p) if p.starts_with("/v1/relay/mailboxes/") && p.ends_with("/ack") => {
+            let mbx = &p["/v1/relay/mailboxes/".len()..p.len() - "/ack".len()];
+            handle_ack_mailbox(&mut st, mbx, body)
+        }
         ("GET", p) if p.starts_with("/v1/relay/mailboxes/") => {
             let mbx = &p["/v1/relay/mailboxes/".len()..];
-            if let Some(ref redis) = st.redis {
-                let _ = redis.del(&format!("sonaraim:mbx:{mbx}"));
-            }
-            let ids: Vec<String> = st
-                .relay
-                .drain_active(mbx, now_secs())
-                .into_iter()
-                .map(|e| format!("\"{}\"", e.envelope_id))
-                .collect();
-            (200, "OK", format!("{{\"envelopes\":[{}]}}", ids.join(",")))
+            handle_get_mailbox(&st, mbx)
         }
         ("POST", "/v1/media/presign") => handle_presign_json(body),
         ("POST", "/v1/contacts/psi") => handle_psi_json(body, st.config.node_id.as_bytes()),
@@ -260,39 +258,4 @@ fn handle_post_identity(st: &mut NodeState, body: &str) -> (u16, &'static str, S
         }
         Err(e) => (400, "Bad Request", err_json("INVALID_DID", &e.to_string())),
     }
-}
-
-fn handle_post_envelope(st: &mut NodeState, body: &str) -> (u16, &'static str, String) {
-    let (Some(env_id), Some(mbx)) = (
-        extract_json_str(body, "envelope_id"),
-        extract_json_str(body, "recipient_mailbox_id"),
-    ) else {
-        return (
-            400,
-            "Bad Request",
-            err_json(
-                "INVALID_BODY",
-                "missing envelope_id or recipient_mailbox_id",
-            ),
-        );
-    };
-    let payload_hex = extract_json_str(body, "payload_hex").unwrap_or_default();
-    if let Some(ref redis) = st.redis {
-        let _ = redis.set_ex(
-            &format!("sonaraim:mbx:{mbx}"),
-            &env_id,
-            st.config.envelope_ttl_seconds,
-        );
-    }
-    let token = st.relay.enqueue(SealedEnvelope {
-        envelope_id: env_id,
-        recipient_mailbox_id: mbx,
-        ciphertext: payload_hex.into_bytes(),
-        created_at_epoch_secs: now_secs(),
-    });
-    (
-        202,
-        "Accepted",
-        format!("{{\"wake_up_token\":\"{token}\"}}"),
-    )
 }

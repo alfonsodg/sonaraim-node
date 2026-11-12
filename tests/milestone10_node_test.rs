@@ -194,3 +194,59 @@ fn issue9_s3_object_upload_and_wal_compaction() {
     let _ = server_handle.join();
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
+
+#[test]
+fn issue10_relay_full_envelope_items_and_ack() {
+    let state = NodeState::new(
+        config_with_token(None),
+        MailboxStore::new(3600),
+        KeyTransparencyLog::default(),
+    );
+    let (addr, _handle) = start_test_server(state).expect("start server");
+
+    // 1. Post envelope with payload_hex
+    let (st_post, _) = send_http_with_auth(
+        &addr,
+        "POST",
+        "/v1/relay/envelopes",
+        None,
+        r#"{"envelope_id":"env-payload-10","recipient_mailbox_id":"did:sonaraim:bob","payload_hex":"cafebabe1234"}"#,
+    );
+    assert_eq!(st_post, 202);
+
+    // 2. GET mailbox returns both envelopes array AND items array with payload_hex
+    let (st_get, body_get) = send_http_with_auth(
+        &addr,
+        "GET",
+        "/v1/relay/mailboxes/did%3Asonaraim%3Abob",
+        None,
+        "",
+    );
+    assert_eq!(st_get, 200);
+    assert!(body_get.contains(r#""envelopes":["env-payload-10"]"#));
+    assert!(body_get.contains(r#""payload_hex":"cafebabe1234""#));
+    assert!(body_get.contains(r#""recipient_mailbox_id":"did:sonaraim:bob""#));
+
+    // 3. POST ack pops the envelope
+    let (st_ack, body_ack) = send_http_with_auth(
+        &addr,
+        "POST",
+        "/v1/relay/mailboxes/did:sonaraim:bob/ack",
+        None,
+        r#"{"envelope_ids":["env-payload-10"]}"#,
+    );
+    assert_eq!(st_ack, 200);
+    assert!(body_ack.contains(r#""acknowledged":1"#));
+
+    // 4. Subsequent GET returns empty arrays
+    let (st_empty, body_empty) = send_http_with_auth(
+        &addr,
+        "GET",
+        "/v1/relay/mailboxes/did:sonaraim:bob",
+        None,
+        "",
+    );
+    assert_eq!(st_empty, 200);
+    assert!(body_empty.contains(r#""envelopes":[]"#));
+    assert!(body_empty.contains(r#""items":[]"#));
+}
