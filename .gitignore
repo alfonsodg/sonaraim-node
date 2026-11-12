@@ -1,19 +1,31 @@
-# Environment
+# Environment & secrets (never tracked)
 .env
 .env.*
 !.env.example
 !samples/.env.example
+.env.dev
+.env.qa
+.env.rev
+.env.prod
+.env.e2e
+REMOTE.md
+CREDENTIALS.md
+docker-compose.override.yml
+deploy/helm/values-*-secrets.yaml
+deploy/helm/values-*-secrets.yml
+*-secrets.yaml
 
-# Debug and local reference (never tracked)
-debug/
-reference/
-
-# Agent files (never tracked)
+# AI agents & context state — NEVER track (PROJECT_STRUCTURE.md)
 AGENTS.md
+.AGENTS.md
 CLAUDE.md
+claude.md
 GEMINI.md
 GROK.md
+codex.md
 .github/copilot-instructions.md
+.github/copilot*.md
+.copilot/
 .kiro/
 .claude/
 .cursor/
@@ -29,42 +41,91 @@ GROK.md
 .opencode/
 .commandcode/
 .antigravitycli/
+.antigravitycli
 .gemini/
-.copilot/
+.grok/
+.qwen/
+.kilocode/
+.rovodev/
+.augment*
+.agents/
+.kimchi/
+.playwright-mcp/
+lsp.json
+todo
 todo.json
+todo*.json
 *.jsonl
+*-session-export*.json
 tasks/
 
-# Infrastructure (never tracked - operational reference)
-REMOTE.md
-docker-compose.override.yml
+# Local-only worktrees, debug, reference & temp spaces (never tracked)
+debug/
+reference/
+worktrees/
+_*/
+tmp/
+scratch/
+test-results/
+playwright-report/
+coverage/
+htmlcov/
+.coverage
 
-# Service sub-repositories (when cloned locally inside coordinator root)
-sonaraim-protocol/
-sonaraim-node/
-sonaraim-b2b/
-sonaraim-admin/
-sonaraim-app/
+# Coordinator isolation — independent service repositories (never tracked in coordinator)
+/sonaraim-protocol/
+/sonaraim-node/
+/sonaraim-b2b/
+/sonaraim-admin/
+/sonaraim-app/
 
-# Build and runtime artifacts
+# Language artifacts — Rust, Node/TS, Go, Python
+target/
+Cargo.lock
+node_modules/
 dist/
 build/
 out/
-target/
-node_modules/
 .next/
+.nuxt/
+.output/
+.turbo/
+*.tsbuildinfo
+.eslintcache
+/vendor/
+*.exe
+*.test
+*.out
 __pycache__/
 *.py[cod]
 *.egg-info/
+.eggs/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
 .venv/
 venv/
+
+# Runtime & local databases
 storage/
+data/
+logs/
+*.log
+*.tmp
+*.bak
+*.orig
 *.db
 *.sqlite3
+*.dump
+*.sql.gz
 
-# Editors and OS
+# IDE & OS
 .vscode/
 .idea/
 *.swp
+*.swo
+*~
 .DS_Store
 Thumbs.db
+Desktop.ini
+.directory
