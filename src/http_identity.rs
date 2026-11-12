@@ -27,6 +27,28 @@ pub fn handle_get_identity(st: &NodeState, did: &str) -> (u16, &'static str, Str
     }
 }
 
+/// Handles `GET /v1/identity/by-phone/:token`.
+pub fn handle_get_identity_by_phone(st: &NodeState, token: &str) -> (u16, &'static str, String) {
+    let eval = crate::psi_service::evaluate_psi_single(token, st.config.node_id.as_bytes());
+    if let Some(did) = st
+        .phone_index
+        .get(token)
+        .or_else(|| st.phone_index.get(&eval))
+    {
+        (
+            200,
+            "OK",
+            format!("{{\"phone_token\":\"{token}\",\"did\":\"{did}\"}}"),
+        )
+    } else {
+        (
+            404,
+            "Not Found",
+            err_json("NOT_FOUND", "phone token not registered"),
+        )
+    }
+}
+
 /// Handles `POST /v1/identity`.
 pub fn handle_post_identity(st: &mut NodeState, body: &str) -> (u16, &'static str, String) {
     let (Some(did), Some(commit)) = (
@@ -86,12 +108,18 @@ pub fn handle_post_identity(st: &mut NodeState, body: &str) -> (u16, &'static st
                 did.clone(),
                 IdentityLogEntry {
                     index,
-                    did,
+                    did: did.clone(),
                     key_commitment: commit,
                     epoch_secs: epoch,
                     leaf_hash,
                 },
             );
+            if let Some(ref pt) = phone_token {
+                let eval =
+                    crate::psi_service::evaluate_psi_single(pt, st.config.node_id.as_bytes());
+                st.phone_index.insert(pt.clone(), did.clone());
+                st.phone_index.insert(eval, did);
+            }
             (201, "Created", json)
         }
         Err(e) => (400, "Bad Request", err_json("INVALID_DID", &e.to_string())),

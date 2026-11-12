@@ -335,3 +335,49 @@ fn issue11_multi_node_federation_replication_and_equivocation_detection() {
     assert_eq!(st_equiv, 409);
     assert!(body_equiv.contains("EQUIVOCATION_DETECTED"));
 }
+
+#[test]
+fn issue12_phone_token_psi_and_routing() {
+    let state = NodeState::new(
+        config_with_token(None),
+        MailboxStore::new(3600),
+        KeyTransparencyLog::default(),
+    );
+    let (addr, _handle) = start_test_server(state).expect("start server");
+
+    // 1. Register identity with phone_token
+    let reg_req = r#"{"did":"did:sonaraim:alice-phone","key_commitment":"pk-alice-phone","phone_token":"+51999888777"}"#;
+    let (st_reg, body_reg) = send_http_with_auth(&addr, "POST", "/v1/identity", None, reg_req);
+    assert_eq!(st_reg, 201);
+    assert!(body_reg.contains("did:sonaraim:alice-phone"));
+
+    // 2. Query by phone token (percent-encoded + -> %2B or literal)
+    let (st_phone, body_phone) = send_http_with_auth(
+        &addr,
+        "GET",
+        "/v1/identity/by-phone/%2B51999888777",
+        None,
+        "",
+    );
+    assert_eq!(st_phone, 200);
+    assert!(body_phone.contains("did:sonaraim:alice-phone"));
+
+    // 3. Contact book PSI evaluation with match
+    let psi_req = r#"{"blinded_tokens":["+51999888777","+51000111222"]}"#;
+    let (st_psi, body_psi) = send_http_with_auth(&addr, "POST", "/v1/contacts/psi", None, psi_req);
+    assert_eq!(st_psi, 200);
+    assert!(body_psi.contains("evaluated_tokens"));
+    assert!(body_psi.contains("matches"));
+    assert!(body_psi.contains("did:sonaraim:alice-phone"));
+    assert!(body_psi.contains("+51999888777"));
+
+    // 4. Query unregistered phone token -> 404
+    let (st_404, _) = send_http_with_auth(
+        &addr,
+        "GET",
+        "/v1/identity/by-phone/%2B51000111222",
+        None,
+        "",
+    );
+    assert_eq!(st_404, 404);
+}

@@ -160,12 +160,20 @@ fn ingest_sync_payload(
                         did.clone(),
                         IdentityLogEntry {
                             index,
-                            did,
+                            did: did.clone(),
                             key_commitment: commit,
                             epoch_secs: epoch,
                             leaf_hash,
                         },
                     );
+                    if let Some(pt) = extract_json_str(&obj, "phone_token") {
+                        let eval = crate::psi_service::evaluate_psi_single(
+                            &pt,
+                            st.config.node_id.as_bytes(),
+                        );
+                        st.phone_index.insert(pt.clone(), did.clone());
+                        st.phone_index.insert(eval, did);
+                    }
                 }
             }
         }

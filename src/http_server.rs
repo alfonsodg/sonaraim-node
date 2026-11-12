@@ -6,7 +6,9 @@ use crate::http_auth::{
     err_json, is_protected_write_route, parse_http_request, verify_bearer_token,
 };
 use crate::http_federation::{handle_get_peers, handle_get_sync, handle_post_peers};
-use crate::http_identity::{handle_get_identity, handle_post_identity};
+use crate::http_identity::{
+    handle_get_identity, handle_get_identity_by_phone, handle_post_identity,
+};
 use crate::http_relay::{handle_ack_mailbox, handle_get_mailbox, handle_post_envelope};
 use crate::merkle::{IdentityLogEntry, KeyTransparencyLog};
 use crate::p2p::P2pMeshNode;
@@ -30,6 +32,7 @@ pub struct NodeState {
     pub relay: MailboxStore,
     pub kt_log: KeyTransparencyLog,
     pub did_index: HashMap<String, IdentityLogEntry>,
+    pub phone_index: HashMap<String, String>,
     pub p2p_mesh: P2pMeshNode,
     pub wal_path: Option<PathBuf>,
     pub redis: Option<RedisRespClient>,
@@ -65,6 +68,7 @@ impl NodeState {
             relay,
             kt_log,
             did_index,
+            phone_index: HashMap::new(),
             p2p_mesh,
             wal_path,
             redis,
@@ -169,6 +173,9 @@ fn dispatch(
             let r = build_l2_anchor_receipt(st.kt_log.len(), &st.kt_log.tree_head(), now_secs());
             (200, "OK", r.to_json())
         }
+        ("GET", p) if p.starts_with("/v1/identity/by-phone/") => {
+            handle_get_identity_by_phone(&st, &p["/v1/identity/by-phone/".len()..])
+        }
         ("GET", p) if p.starts_with("/v1/identity/") => {
             handle_get_identity(&st, &p["/v1/identity/".len()..])
         }
@@ -182,7 +189,9 @@ fn dispatch(
             handle_get_mailbox(&st, mbx)
         }
         ("POST", "/v1/media/presign") => handle_presign_json(body),
-        ("POST", "/v1/contacts/psi") => handle_psi_json(body, st.config.node_id.as_bytes()),
+        ("POST", "/v1/contacts/psi") => {
+            handle_psi_json(body, st.config.node_id.as_bytes(), &st.phone_index)
+        }
         _ => (
             404,
             "Not Found",

@@ -4,6 +4,8 @@ use crate::storage::{
     extract_json_str, extract_json_str_array, extract_json_u64, generate_s3_presigned_url,
 };
 
+use std::collections::HashMap;
+
 /// Receipt recording an optional periodic L2 anchor of the Key Transparency Merkle root.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct L2AnchorReceipt {
@@ -26,19 +28,23 @@ impl L2AnchorReceipt {
     }
 }
 
+/// Evaluates a single blinded token against a node secret key using FNV-1a.
+#[must_use]
+pub fn evaluate_psi_single(token: &str, server_secret: &[u8]) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for &b in server_secret.iter().chain(token.as_bytes().iter()) {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    format!("{h:016x}")
+}
+
 /// Evaluates a batch of client-blinded contact tokens against a node secret key.
 #[must_use]
 pub fn evaluate_psi_batch(blinded_tokens: &[String], server_secret: &[u8]) -> Vec<String> {
     blinded_tokens
         .iter()
-        .map(|tok| {
-            let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-            for &b in server_secret.iter().chain(tok.as_bytes().iter()) {
-                h ^= u64::from(b);
-                h = h.wrapping_mul(0x0100_0000_01b3);
-            }
-            format!("{h:016x}")
-        })
+        .map(|tok| evaluate_psi_single(tok, server_secret))
         .collect()
 }
 
@@ -76,15 +82,30 @@ pub fn handle_presign_json(body: &str) -> (u16, &'static str, String) {
 
 /// Handles `POST /v1/contacts/psi` JSON body and returns `(status, reason, json)`.
 #[must_use]
-pub fn handle_psi_json(body: &str, secret: &[u8]) -> (u16, &'static str, String) {
+pub fn handle_psi_json(
+    body: &str,
+    secret: &[u8],
+    phone_index: &HashMap<String, String>,
+) -> (u16, &'static str, String) {
     let tokens = extract_json_str_array(body, "blinded_tokens");
-    let quoted: Vec<String> = evaluate_psi_batch(&tokens, secret)
-        .into_iter()
-        .map(|t| format!("\"{t}\""))
-        .collect();
+    let mut quoted = Vec::new();
+    let mut matches = Vec::new();
+    for tok in &tokens {
+        let eval = evaluate_psi_single(tok, secret);
+        if let Some(did) = phone_index.get(&eval).or_else(|| phone_index.get(tok)) {
+            matches.push(format!(
+                "{{\"blinded_token\":\"{tok}\",\"evaluated_token\":\"{eval}\",\"did\":\"{did}\"}}"
+            ));
+        }
+        quoted.push(format!("\"{eval}\""));
+    }
     (
         200,
         "OK",
-        format!("{{\"evaluated_tokens\":[{}]}}", quoted.join(",")),
+        format!(
+            "{{\"evaluated_tokens\":[{}],\"matches\":[{}]}}",
+            quoted.join(","),
+            matches.join(",")
+        ),
     )
 }
