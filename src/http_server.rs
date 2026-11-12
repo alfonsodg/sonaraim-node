@@ -1,6 +1,6 @@
 //! Lightweight std-only HTTP/1.1 REST server for `sonaraim-node`.
 //!
-//! Exposes `/health`, `/v1/identity`, `/v1/identity/{did}`, `/v1/relay/envelopes`,
+//! Exposes `/health`, `/metrics`, `/v1/identity`, `/v1/identity/{did}`, `/v1/relay/envelopes`,
 //! `/v1/relay/mailboxes/{mailbox_id}`, `/v1/media/presign`, `/v1/contacts/psi`,
 //! and `/v1/identity/anchors/latest`.
 
@@ -8,11 +8,16 @@ use crate::config::NodeConfig;
 use crate::health::HealthStatus;
 use crate::merkle::{IdentityLogEntry, KeyTransparencyLog};
 use crate::psi_service::{build_l2_anchor_receipt, evaluate_psi_batch};
+use crate::redis_store::RedisRespClient;
 use crate::relay::{MailboxStore, SealedEnvelope};
-use crate::storage::generate_s3_presigned_url;
+use crate::storage::{
+    append_wal_entry, extract_json_str, extract_json_str_array, extract_json_u64,
+    generate_s3_presigned_url, load_wal_entries, wal_path_from_signing_key, WalEntry,
+};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -28,17 +33,69 @@ pub struct NodeState {
     pub kt_log: KeyTransparencyLog,
     /// Lookup index from DID string to latest [`IdentityLogEntry`].
     pub did_index: HashMap<String, IdentityLogEntry>,
+    /// Optional durable Write-Ahead Log file path.
+    pub wal_path: Option<PathBuf>,
+    /// Optional Redis RESP client for mailbox TTL persistence.
+    pub redis: Option<RedisRespClient>,
 }
 
 impl NodeState {
-    /// Creates a new [`NodeState`].
+    /// Creates a new [`NodeState`], recovering WAL entries if `NODE_SIGNING_KEY_PATH` is set
+    /// and connecting to `REDIS_URL` if configured.
     #[must_use]
     pub fn new(config: NodeConfig, relay: MailboxStore, kt_log: KeyTransparencyLog) -> Self {
+        let wal_path = std::env::var("NODE_SIGNING_KEY_PATH")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .map(|p| wal_path_from_signing_key(&p));
+        let redis = std::env::var("REDIS_URL")
+            .ok()
+            .and_then(|u| RedisRespClient::from_url(&u).ok());
+        Self::with_wal_and_redis(config, relay, kt_log, wal_path, redis)
+    }
+
+    /// Creates a [`NodeState`] with explicit WAL path and optional [`RedisRespClient`],
+    /// replaying any existing WAL entries into `kt_log` and `did_index`.
+    #[must_use]
+    pub fn with_wal_and_redis(
+        config: NodeConfig,
+        relay: MailboxStore,
+        mut kt_log: KeyTransparencyLog,
+        wal_path: Option<PathBuf>,
+        redis: Option<RedisRespClient>,
+    ) -> Self {
+        let mut did_index = HashMap::new();
+        if let Some(ref path) = wal_path {
+            for item in load_wal_entries(path).unwrap_or_default() {
+                if let Ok((index, _)) =
+                    kt_log.append(&item.did, &item.key_commitment, item.epoch_secs)
+                {
+                    let leaf_hash = KeyTransparencyLog::hash_leaf(
+                        index,
+                        &item.did,
+                        &item.key_commitment,
+                        item.epoch_secs,
+                    );
+                    did_index.insert(
+                        item.did.clone(),
+                        IdentityLogEntry {
+                            index,
+                            did: item.did,
+                            key_commitment: item.key_commitment,
+                            epoch_secs: item.epoch_secs,
+                            leaf_hash,
+                        },
+                    );
+                }
+            }
+        }
         Self {
             config,
             relay,
             kt_log,
-            did_index: HashMap::new(),
+            did_index,
+            wal_path,
+            redis,
         }
     }
 }
@@ -90,9 +147,14 @@ fn handle_connection(
     let method = first_line.next().unwrap_or("");
     let path = first_line.next().unwrap_or("");
 
+    let content_type = if path == "/metrics" {
+        "text/plain; version=0.0.4"
+    } else {
+        "application/json"
+    };
     let (status, reason, resp_body) = dispatch(method, path, body, shared);
     let reply = format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{resp_body}",
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{resp_body}",
         resp_body.len()
     );
     stream.write_all(reply.as_bytes())
@@ -117,38 +179,20 @@ fn dispatch(
             let health = HealthStatus::from_state(&st.config, &st.relay, &st.kt_log);
             (200, "OK", health.to_json())
         }
-        ("POST", "/v1/identity") => {
-            let Some(did) = extract_str(body, "did") else {
-                return (400, "Bad Request", err_json("INVALID_BODY", "missing did"));
-            };
-            let Some(commit) = extract_str(body, "key_commitment") else {
-                return (
-                    400,
-                    "Bad Request",
-                    err_json("INVALID_BODY", "missing key_commitment"),
-                );
-            };
-            match st.kt_log.append(&did, &commit, now_secs()) {
-                Ok((index, leaf_hash)) => {
-                    let entry = IdentityLogEntry {
-                        index,
-                        did: did.clone(),
-                        key_commitment: commit,
-                        epoch_secs: now_secs(),
-                        leaf_hash,
-                    };
-                    let json = format!(
-                        "{{\"did\":\"{}\",\"index\":{},\"tree_head\":\"{}\"}}",
-                        entry.did,
-                        entry.index,
-                        st.kt_log.tree_head()
-                    );
-                    st.did_index.insert(did, entry);
-                    (201, "Created", json)
-                }
-                Err(e) => (400, "Bad Request", err_json("INVALID_DID", &e.to_string())),
-            }
+        ("GET", "/metrics") => {
+            let text = format!(
+                "# HELP sonaraim_node_kt_entries_total Total Key Transparency log entries\n\
+                 # TYPE sonaraim_node_kt_entries_total counter\n\
+                 sonaraim_node_kt_entries_total {}\n\
+                 # HELP sonaraim_node_queued_envelopes Currently queued relay envelopes\n\
+                 # TYPE sonaraim_node_queued_envelopes gauge\n\
+                 sonaraim_node_queued_envelopes {}\n",
+                st.kt_log.len(),
+                st.relay.total_queued()
+            );
+            (200, "OK", text)
         }
+        ("POST", "/v1/identity") => handle_post_identity(&mut st, body),
         ("GET", "/v1/identity/anchors/latest") => {
             let receipt =
                 build_l2_anchor_receipt(st.kt_log.len(), &st.kt_log.tree_head(), now_secs());
@@ -161,10 +205,7 @@ fn dispatch(
                     let verified_b2b = entry.did.starts_with("did:web:");
                     let json = format!(
                         "{{\"did\":\"{}\",\"verified_b2b\":{},\"leaf_hash\":\"{}\",\"tree_head\":\"{}\"}}",
-                        entry.did,
-                        verified_b2b,
-                        entry.leaf_hash,
-                        st.kt_log.tree_head()
+                        entry.did, verified_b2b, entry.leaf_hash, st.kt_log.tree_head()
                     );
                     (200, "OK", json)
                 }
@@ -175,36 +216,12 @@ fn dispatch(
                 ),
             }
         }
-        ("POST", "/v1/relay/envelopes") => {
-            let Some(env_id) = extract_str(body, "envelope_id") else {
-                return (
-                    400,
-                    "Bad Request",
-                    err_json("INVALID_BODY", "missing envelope_id"),
-                );
-            };
-            let Some(mbx) = extract_str(body, "recipient_mailbox_id") else {
-                return (
-                    400,
-                    "Bad Request",
-                    err_json("INVALID_BODY", "missing recipient_mailbox_id"),
-                );
-            };
-            let payload_hex = extract_str(body, "payload_hex").unwrap_or_default();
-            let token = st.relay.enqueue(SealedEnvelope {
-                envelope_id: env_id,
-                recipient_mailbox_id: mbx,
-                ciphertext: payload_hex.into_bytes(),
-                created_at_epoch_secs: now_secs(),
-            });
-            (
-                202,
-                "Accepted",
-                format!("{{\"wake_up_token\":\"{token}\"}}"),
-            )
-        }
+        ("POST", "/v1/relay/envelopes") => handle_post_envelope(&mut st, body),
         ("GET", p) if p.starts_with("/v1/relay/mailboxes/") => {
             let mbx = &p["/v1/relay/mailboxes/".len()..];
+            if let Some(ref redis) = st.redis {
+                let _ = redis.del(&format!("sonaraim:mbx:{mbx}"));
+            }
             let items = st.relay.drain_active(mbx, now_secs());
             let ids: Vec<String> = items
                 .into_iter()
@@ -213,21 +230,21 @@ fn dispatch(
             (200, "OK", format!("{{\"envelopes\":[{}]}}", ids.join(",")))
         }
         ("POST", "/v1/media/presign") => {
-            let Some(hash) = extract_str(body, "sha256_ciphertext") else {
+            let Some(hash) = extract_json_str(body, "sha256_ciphertext") else {
                 return (
                     400,
                     "Bad Request",
                     err_json("INVALID_BODY", "missing sha256_ciphertext"),
                 );
             };
-            let len = extract_u64(body, "content_length").unwrap_or(0);
+            let len = extract_json_u64(body, "content_length").unwrap_or(0);
             let endpoint = std::env::var("S3_ENDPOINT_URL").unwrap_or_default();
             let bucket = std::env::var("S3_BUCKET_MEDIA").unwrap_or_default();
             let url = generate_s3_presigned_url(&endpoint, &bucket, &hash, len);
             (200, "OK", format!("{{\"presigned_url\":\"{url}\"}}"))
         }
         ("POST", "/v1/contacts/psi") => {
-            let tokens = extract_str_array(body, "blinded_tokens");
+            let tokens = extract_json_str_array(body, "blinded_tokens");
             let eval = evaluate_psi_batch(&tokens, st.config.node_id.as_bytes());
             let quoted: Vec<String> = eval.into_iter().map(|t| format!("\"{t}\"")).collect();
             (
@@ -244,40 +261,87 @@ fn dispatch(
     }
 }
 
+fn handle_post_identity(st: &mut NodeState, body: &str) -> (u16, &'static str, String) {
+    let Some(did) = extract_json_str(body, "did") else {
+        return (400, "Bad Request", err_json("INVALID_BODY", "missing did"));
+    };
+    let Some(commit) = extract_json_str(body, "key_commitment") else {
+        return (
+            400,
+            "Bad Request",
+            err_json("INVALID_BODY", "missing key_commitment"),
+        );
+    };
+    let epoch = now_secs();
+    match st.kt_log.append(&did, &commit, epoch) {
+        Ok((index, _)) => {
+            if let Some(ref wal_path) = st.wal_path {
+                let _ = append_wal_entry(
+                    wal_path,
+                    &WalEntry {
+                        did: did.clone(),
+                        key_commitment: commit.clone(),
+                        epoch_secs: epoch,
+                    },
+                );
+            }
+            let leaf_hash = KeyTransparencyLog::hash_leaf(index, &did, &commit, epoch);
+            let entry = IdentityLogEntry {
+                index,
+                did: did.clone(),
+                key_commitment: commit,
+                epoch_secs: epoch,
+                leaf_hash,
+            };
+            let json = format!(
+                "{{\"did\":\"{}\",\"index\":{},\"tree_head\":\"{}\"}}",
+                entry.did,
+                entry.index,
+                st.kt_log.tree_head()
+            );
+            st.did_index.insert(did, entry);
+            (201, "Created", json)
+        }
+        Err(e) => (400, "Bad Request", err_json("INVALID_DID", &e.to_string())),
+    }
+}
+
+fn handle_post_envelope(st: &mut NodeState, body: &str) -> (u16, &'static str, String) {
+    let Some(env_id) = extract_json_str(body, "envelope_id") else {
+        return (
+            400,
+            "Bad Request",
+            err_json("INVALID_BODY", "missing envelope_id"),
+        );
+    };
+    let Some(mbx) = extract_json_str(body, "recipient_mailbox_id") else {
+        return (
+            400,
+            "Bad Request",
+            err_json("INVALID_BODY", "missing recipient_mailbox_id"),
+        );
+    };
+    let payload_hex = extract_json_str(body, "payload_hex").unwrap_or_default();
+    if let Some(ref redis) = st.redis {
+        let _ = redis.set_ex(
+            &format!("sonaraim:mbx:{mbx}"),
+            &env_id,
+            st.config.envelope_ttl_seconds,
+        );
+    }
+    let token = st.relay.enqueue(SealedEnvelope {
+        envelope_id: env_id,
+        recipient_mailbox_id: mbx,
+        ciphertext: payload_hex.into_bytes(),
+        created_at_epoch_secs: now_secs(),
+    });
+    (
+        202,
+        "Accepted",
+        format!("{{\"wake_up_token\":\"{token}\"}}"),
+    )
+}
+
 fn err_json(code: &str, message: &str) -> String {
     format!("{{\"error\":{{\"code\":\"{code}\",\"message\":\"{message}\"}}}}")
-}
-
-fn extract_str(raw: &str, key: &str) -> Option<String> {
-    let pat = format!("\"{key}\":\"");
-    let start = raw.find(&pat)? + pat.len();
-    let rest = &raw[start..];
-    let end = rest.find('"')?;
-    Some(rest[..end].to_string())
-}
-
-fn extract_u64(raw: &str, key: &str) -> Option<u64> {
-    let pat = format!("\"{key}\":");
-    let start = raw.find(&pat)? + pat.len();
-    let digits: String = raw[start..]
-        .chars()
-        .take_while(|c| c.is_ascii_digit())
-        .collect();
-    digits.parse::<u64>().ok()
-}
-
-fn extract_str_array(raw: &str, key: &str) -> Vec<String> {
-    let pat = format!("\"{key}\":[");
-    let Some(start) = raw.find(&pat) else {
-        return Vec::new();
-    };
-    let rest = &raw[start + pat.len()..];
-    let Some(end) = rest.find(']') else {
-        return Vec::new();
-    };
-    rest[..end]
-        .split(',')
-        .map(|s| s.trim().trim_matches('"').to_string())
-        .filter(|s| !s.is_empty())
-        .collect()
 }
