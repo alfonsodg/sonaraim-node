@@ -1,0 +1,70 @@
+# Environment
+.env
+.env.*
+!.env.example
+!samples/.env.example
+
+# Debug and local reference (never tracked)
+debug/
+reference/
+
+# Agent files (never tracked)
+AGENTS.md
+CLAUDE.md
+GEMINI.md
+GROK.md
+.github/copilot-instructions.md
+.kiro/
+.claude/
+.cursor/
+.windsurf/
+.codex/
+.crush/
+.aider*
+.continue/
+.cline/
+.roo/
+.factory/
+.droid/
+.opencode/
+.commandcode/
+.antigravitycli/
+.gemini/
+.copilot/
+todo.json
+*.jsonl
+tasks/
+
+# Infrastructure (never tracked - operational reference)
+REMOTE.md
+docker-compose.override.yml
+
+# Service sub-repositories (when cloned locally inside coordinator root)
+sonaraim-protocol/
+sonaraim-node/
+sonaraim-b2b/
+sonaraim-admin/
+sonaraim-app/
+
+# Build and runtime artifacts
+dist/
+build/
+out/
+target/
+node_modules/
+.next/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+storage/
+*.db
+*.sqlite3
+
+# Editors and OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

@@ -1,0 +1,9 @@
+[package]
+name = "sonaraim-node"
+version = "0.1.0"
+edition = "2021"
+description = "SonarAIM decentralized P2P relay node, ephemeral store-and-forward queue, and Key Transparency Merkle log"
+license = "Apache-2.0"
+repository = "https://github.com/alfonsodg/sonaraim-node"
+
+[dependencies]

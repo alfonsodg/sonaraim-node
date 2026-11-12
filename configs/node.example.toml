@@ -1,0 +1,11 @@
+# SonarAIM Node Configuration Template
+# All runtime values must be injected via environment variables in production.
+
+[node]
+id = "${NODE_ID}"
+http_host = "${NODE_HTTP_HOST}"
+http_port = "${NODE_HTTP_PORT}"
+p2p_listen_addr = "${NODE_P2P_LISTEN_ADDR}"
+
+[relay]
+envelope_ttl_seconds = "${NODE_ENVELOPE_TTL_SECONDS}"
