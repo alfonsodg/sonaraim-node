@@ -5,16 +5,16 @@ use crate::health::HealthStatus;
 use crate::http_auth::{
     err_json, is_protected_write_route, parse_http_request, verify_bearer_token,
 };
+use crate::http_federation::{handle_get_peers, handle_get_sync, handle_post_peers};
+use crate::http_identity::{handle_get_identity, handle_post_identity};
 use crate::http_relay::{handle_ack_mailbox, handle_get_mailbox, handle_post_envelope};
 use crate::merkle::{IdentityLogEntry, KeyTransparencyLog};
 use crate::p2p::P2pMeshNode;
 use crate::psi_service::{build_l2_anchor_receipt, handle_presign_json, handle_psi_json};
 use crate::redis_store::RedisRespClient;
 use crate::relay::MailboxStore;
-use crate::storage::{
-    append_wal_entry, extract_json_str, replay_wal_into_log, wal_path_from_signing_key, WalEntry,
-};
-use crate::udp_gossip::{ingest_gossip_json, verify_did_web_document};
+use crate::storage::{replay_wal_into_log, wal_path_from_signing_key};
+use crate::udp_gossip::ingest_gossip_json;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -162,6 +162,9 @@ fn dispatch(
         }
         ("POST", "/v1/identity") => handle_post_identity(&mut st, body),
         ("POST", "/v1/p2p/gossip") => ingest_gossip_json(&mut st.p2p_mesh, body),
+        ("POST", "/v1/p2p/peers") => handle_post_peers(&mut st, body),
+        ("GET", "/v1/p2p/peers") => handle_get_peers(&st),
+        ("GET", "/v1/p2p/sync") => handle_get_sync(&st),
         ("GET", "/v1/identity/anchors/latest") => {
             let r = build_l2_anchor_receipt(st.kt_log.len(), &st.kt_log.tree_head(), now_secs());
             (200, "OK", r.to_json())
@@ -185,77 +188,5 @@ fn dispatch(
             "Not Found",
             err_json("ROUTE_NOT_FOUND", "unknown route or method"),
         ),
-    }
-}
-
-fn handle_get_identity(st: &NodeState, did: &str) -> (u16, &'static str, String) {
-    if let Some(e) = st.did_index.get(did) {
-        let b2b = e.did.starts_with("did:web:");
-        let th = st.kt_log.tree_head();
-        let j = format!(
-            "{{\"did\":\"{}\",\"verified_b2b\":{b2b},\"leaf_hash\":\"{}\",\"tree_head\":\"{th}\"}}",
-            e.did, e.leaf_hash
-        );
-        (200, "OK", j)
-    } else {
-        (
-            404,
-            "Not Found",
-            err_json("NOT_FOUND", "DID not registered"),
-        )
-    }
-}
-
-fn handle_post_identity(st: &mut NodeState, body: &str) -> (u16, &'static str, String) {
-    let (Some(did), Some(commit)) = (
-        extract_json_str(body, "did"),
-        extract_json_str(body, "key_commitment"),
-    ) else {
-        return (
-            400,
-            "Bad Request",
-            err_json("INVALID_BODY", "missing did or key_commitment"),
-        );
-    };
-    if did.starts_with("did:web:")
-        && body.contains("\"did_document_json\"")
-        && !extract_json_str(body, "did_document_json")
-            .is_some_and(|doc| verify_did_web_document(&did, &doc))
-    {
-        return (
-            400,
-            "Bad Request",
-            err_json("INVALID_DID_WEB_DOC", "did:web invalid"),
-        );
-    }
-    let epoch = now_secs();
-    match st.kt_log.append(&did, &commit, epoch) {
-        Ok((index, _)) => {
-            if let Some(ref wal) = st.wal_path {
-                let entry = WalEntry {
-                    did: did.clone(),
-                    key_commitment: commit.clone(),
-                    epoch_secs: epoch,
-                };
-                let _ = append_wal_entry(wal, &entry);
-            }
-            let leaf_hash = KeyTransparencyLog::hash_leaf(index, &did, &commit, epoch);
-            let json = format!(
-                "{{\"did\":\"{did}\",\"index\":{index},\"tree_head\":\"{}\"}}",
-                st.kt_log.tree_head()
-            );
-            st.did_index.insert(
-                did.clone(),
-                IdentityLogEntry {
-                    index,
-                    did,
-                    key_commitment: commit,
-                    epoch_secs: epoch,
-                    leaf_hash,
-                },
-            );
-            (201, "Created", json)
-        }
-        Err(e) => (400, "Bad Request", err_json("INVALID_DID", &e.to_string())),
     }
 }

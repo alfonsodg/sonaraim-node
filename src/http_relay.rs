@@ -22,6 +22,7 @@ pub fn handle_post_envelope(st: &mut NodeState, body: &str) -> (u16, &'static st
         );
     };
     let payload_hex = extract_json_str(body, "payload_hex").unwrap_or_default();
+    let replicated = body.contains("\"replicated\":true") || body.contains("\"replicated\": true");
     if let Some(ref redis) = st.redis {
         let _ = redis.set_ex(
             &format!("sonaraim:mbx:{mbx}"),
@@ -30,11 +31,15 @@ pub fn handle_post_envelope(st: &mut NodeState, body: &str) -> (u16, &'static st
         );
     }
     let token = st.relay.enqueue(SealedEnvelope {
-        envelope_id: env_id,
-        recipient_mailbox_id: mbx,
-        ciphertext: payload_hex.into_bytes(),
+        envelope_id: env_id.clone(),
+        recipient_mailbox_id: mbx.clone(),
+        ciphertext: payload_hex.as_bytes().to_vec(),
         created_at_epoch_secs: now_secs(),
     });
+    if !replicated {
+        let peers = st.p2p_mesh.peers();
+        crate::http_federation::replicate_envelope_to_peers(&peers, &env_id, &mbx, &payload_hex);
+    }
     (
         202,
         "Accepted",

@@ -250,3 +250,88 @@ fn issue10_relay_full_envelope_items_and_ack() {
     assert!(body_empty.contains(r#""envelopes":[]"#));
     assert!(body_empty.contains(r#""items":[]"#));
 }
+
+fn config_with_id(node_id: &str) -> NodeConfig {
+    let mut vars = HashMap::new();
+    vars.insert("NODE_ID".to_string(), node_id.to_string());
+    vars.insert("NODE_HTTP_HOST".to_string(), "127.0.0.1".to_string());
+    vars.insert("NODE_HTTP_PORT".to_string(), "8049".to_string());
+    vars.insert(
+        "NODE_P2P_LISTEN_ADDR".to_string(),
+        "/ip4/127.0.0.1/udp/0/quic-v1".to_string(),
+    );
+    vars.insert("NODE_ENVELOPE_TTL_SECONDS".to_string(), "3600".to_string());
+    NodeConfig::from_map(&vars).expect("valid config")
+}
+
+#[test]
+fn issue11_multi_node_federation_replication_and_equivocation_detection() {
+    let node_a = NodeState::new(
+        config_with_id("node-ent-a"),
+        MailboxStore::new(3600),
+        KeyTransparencyLog::default(),
+    );
+    let (addr_a, _h_a) = start_test_server(node_a).expect("start server a");
+
+    let node_b = NodeState::new(
+        config_with_id("node-user-b"),
+        MailboxStore::new(3600),
+        KeyTransparencyLog::default(),
+    );
+    let (addr_b, _h_b) = start_test_server(node_b).expect("start server b");
+
+    // 1. Peer Node A with Node B
+    let peer_req = format!(
+        r#"{{"peer_id":"node-user-b","rpc_url":"http://{addr_b}","multiaddr":"/ip4/127.0.0.1/tcp/0"}}"#
+    );
+    let (st_peer, body_peer) =
+        send_http_with_auth(&addr_a, "POST", "/v1/p2p/peers", None, &peer_req);
+    assert_eq!(st_peer, 201);
+    assert!(body_peer.contains("peered"));
+
+    let (st_peers_list, body_peers) =
+        send_http_with_auth(&addr_a, "GET", "/v1/p2p/peers", None, "");
+    assert_eq!(st_peers_list, 200);
+    assert!(body_peers.contains("node-user-b"));
+
+    // 2. Register identity on Node A -> replicates to Node B
+    let id_req = r#"{"did":"did:sonaraim:alice-fed","key_commitment":"pk-alice-fed"}"#;
+    let (st_id, _) = send_http_with_auth(&addr_a, "POST", "/v1/identity", None, id_req);
+    assert_eq!(st_id, 201);
+
+    // Verify identity on Node B
+    let (st_id_b, body_id_b) = send_http_with_auth(
+        &addr_b,
+        "GET",
+        "/v1/identity/did:sonaraim:alice-fed",
+        None,
+        "",
+    );
+    assert_eq!(st_id_b, 200);
+    assert!(body_id_b.contains("did:sonaraim:alice-fed"));
+
+    // 3. Post envelope on Node A -> replicates to Node B
+    let env_req = r#"{"envelope_id":"env-fed-001","recipient_mailbox_id":"did:sonaraim:alice-fed","payload_hex":"deadbeef42"}"#;
+    let (st_env, _) = send_http_with_auth(&addr_a, "POST", "/v1/relay/envelopes", None, env_req);
+    assert_eq!(st_env, 202);
+
+    // Recipient fetches from Node B
+    let (st_mbx_b, body_mbx_b) = send_http_with_auth(
+        &addr_b,
+        "GET",
+        "/v1/relay/mailboxes/did:sonaraim:alice-fed",
+        None,
+        "",
+    );
+    assert_eq!(st_mbx_b, 200);
+    assert!(body_mbx_b.contains("env-fed-001"));
+    assert!(body_mbx_b.contains("deadbeef42"));
+
+    // 4. Merkle equivocation detection on Node B -> 409 Conflict
+    let equivocation_gossip =
+        r#"{"node_id":"node-ent-a","tree_size":1,"root_hash":"conflicting-hash-999"}"#;
+    let (st_equiv, body_equiv) =
+        send_http_with_auth(&addr_b, "POST", "/v1/p2p/gossip", None, equivocation_gossip);
+    assert_eq!(st_equiv, 409);
+    assert!(body_equiv.contains("EQUIVOCATION_DETECTED"));
+}
