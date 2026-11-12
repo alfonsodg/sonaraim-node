@@ -128,3 +128,69 @@ fn issue8_percent_decoded_did_paths_and_bearer_auth_gate_on_writes() {
     assert_eq!(st_mbx, 200);
     assert!(body_mbx.contains("env-url-1"));
 }
+
+#[test]
+fn issue9_s3_object_upload_and_wal_compaction() {
+    use sonaraim_node::s3_wal_maintenance::{compact_wal_file, put_s3_object_http};
+    use std::net::TcpListener;
+    use std::thread;
+
+    // 1. WAL Compaction
+    let temp_dir = std::env::temp_dir().join(format!("sonaraim-wal-test-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&temp_dir);
+    let wal_path = temp_dir.join("test_mailboxes.wal");
+    std::fs::write(
+        &wal_path,
+        "{\"envelope_id\":\"old-stale\",\"recipient_mailbox_id\":\"stale-mbx\",\"payload_hex\":\"00\"}\n",
+    )
+    .expect("write initial wal");
+
+    let active_entries = vec![
+        (
+            "env-active-1".to_string(),
+            "mbx-active".to_string(),
+            "01020304".to_string(),
+        ),
+        (
+            "env-active-2".to_string(),
+            "mbx-active".to_string(),
+            "05060708".to_string(),
+        ),
+    ];
+    let written = compact_wal_file(&wal_path, &active_entries).expect("compact wal");
+    assert_eq!(written, 2);
+
+    let compacted = std::fs::read_to_string(&wal_path).expect("read compacted wal");
+    assert!(!compacted.contains("old-stale"));
+    assert!(compacted.contains("env-active-1"));
+    assert!(compacted.contains("env-active-2"));
+
+    // 2. Mock S3 HTTP PUT
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock s3");
+    let mock_addr = listener.local_addr().expect("local addr").to_string();
+
+    let server_handle = thread::spawn(move || {
+        if let Ok((mut stream, _)) = listener.accept() {
+            let mut buf = [0u8; 1024];
+            let n = stream.read(&mut buf).unwrap_or(0);
+            let req = String::from_utf8_lossy(&buf[..n]);
+            assert!(req.starts_with("PUT /media-bucket/avatar.bin HTTP/1.1"));
+            assert!(req.contains("Content-Length: 13"));
+            let resp = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+            let _ = stream.write_all(resp.as_bytes());
+        }
+    });
+
+    let status = put_s3_object_http(
+        &format!("http://{mock_addr}"),
+        "media-bucket",
+        "avatar.bin",
+        b"encrypted-pic",
+        2000,
+    )
+    .expect("s3 put success");
+    assert_eq!(status, 200);
+
+    let _ = server_handle.join();
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}

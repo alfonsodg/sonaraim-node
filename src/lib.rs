@@ -14,5 +14,8 @@ pub mod p2p;
 pub mod psi_service;
 pub mod redis_store;
 pub mod relay;
+pub mod s3_wal_maintenance;
 pub mod storage;
 pub mod udp_gossip;
+
+pub use s3_wal_maintenance::{compact_wal_file, put_s3_object_http};
