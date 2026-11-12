@@ -1,7 +1,8 @@
 //! Durable snapshot persistence, file-backed Write-Ahead Log (WAL) recovery,
 //! S3-compatible presigned media URL generation, and lightweight JSON field parsers.
 
-use crate::merkle::KeyTransparencyLog;
+use crate::merkle::{IdentityLogEntry, KeyTransparencyLog};
+use std::collections::HashMap;
 use std::fmt;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -106,6 +107,39 @@ pub fn load_wal_entries(wal_path: &Path) -> Result<Vec<WalEntry>, StorageError> 
         }
     }
     Ok(entries)
+}
+
+/// Replays WAL entries from `wal_path` into `kt_log` and returns the populated `did_index`.
+#[must_use]
+pub fn replay_wal_into_log(
+    wal_path: Option<&Path>,
+    kt_log: &mut KeyTransparencyLog,
+) -> HashMap<String, IdentityLogEntry> {
+    let mut did_index = HashMap::new();
+    let Some(path) = wal_path else {
+        return did_index;
+    };
+    for item in load_wal_entries(path).unwrap_or_default() {
+        if let Ok((idx, _)) = kt_log.append(&item.did, &item.key_commitment, item.epoch_secs) {
+            let leaf_hash = KeyTransparencyLog::hash_leaf(
+                idx,
+                &item.did,
+                &item.key_commitment,
+                item.epoch_secs,
+            );
+            did_index.insert(
+                item.did.clone(),
+                IdentityLogEntry {
+                    index: idx,
+                    did: item.did,
+                    key_commitment: item.key_commitment,
+                    epoch_secs: item.epoch_secs,
+                    leaf_hash,
+                },
+            );
+        }
+    }
+    did_index
 }
 
 /// Point-in-time serializable snapshot of a `sonaraim-node` identity log.

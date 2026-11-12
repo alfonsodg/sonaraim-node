@@ -1,5 +1,9 @@
 //! Private Set Intersection (PSI) blind evaluation service and L2 Merkle anchor receipts.
 
+use crate::storage::{
+    extract_json_str, extract_json_str_array, extract_json_u64, generate_s3_presigned_url,
+};
+
 /// Receipt recording an optional periodic L2 anchor of the Key Transparency Merkle root.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct L2AnchorReceipt {
@@ -50,4 +54,37 @@ pub fn build_l2_anchor_receipt(
         root_hash: root_hash.to_string(),
         anchored_at_epoch_secs,
     }
+}
+
+/// Handles `POST /v1/media/presign` JSON body and returns `(status, reason, json)`.
+#[must_use]
+pub fn handle_presign_json(body: &str) -> (u16, &'static str, String) {
+    let Some(hash) = extract_json_str(body, "sha256_ciphertext") else {
+        return (
+            400,
+            "Bad Request",
+            "{\"error\":{\"code\":\"INVALID_BODY\",\"message\":\"missing sha256_ciphertext\"}}"
+                .to_string(),
+        );
+    };
+    let len = extract_json_u64(body, "content_length").unwrap_or(0);
+    let ep = std::env::var("S3_ENDPOINT_URL").unwrap_or_default();
+    let bkt = std::env::var("S3_BUCKET_MEDIA").unwrap_or_default();
+    let url = generate_s3_presigned_url(&ep, &bkt, &hash, len);
+    (200, "OK", format!("{{\"presigned_url\":\"{url}\"}}"))
+}
+
+/// Handles `POST /v1/contacts/psi` JSON body and returns `(status, reason, json)`.
+#[must_use]
+pub fn handle_psi_json(body: &str, secret: &[u8]) -> (u16, &'static str, String) {
+    let tokens = extract_json_str_array(body, "blinded_tokens");
+    let quoted: Vec<String> = evaluate_psi_batch(&tokens, secret)
+        .into_iter()
+        .map(|t| format!("\"{t}\""))
+        .collect();
+    (
+        200,
+        "OK",
+        format!("{{\"evaluated_tokens\":[{}]}}", quoted.join(",")),
+    )
 }

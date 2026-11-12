@@ -1,4 +1,4 @@
-//! Health telemetry snapshot and `/health` JSON payload serializer.
+//! Health telemetry snapshot, `/health` JSON payload serializer, and Prometheus `/metrics` formatter.
 
 use crate::config::NodeConfig;
 use crate::merkle::KeyTransparencyLog;
@@ -65,6 +65,19 @@ impl HealthStatus {
             self.queued_envelopes,
             self.kt_log_entries,
             escape_json(&self.kt_tree_head),
+        )
+    }
+
+    /// Formats Prometheus `text/plain; version=0.0.4` metrics for `/metrics`.
+    #[must_use]
+    pub fn format_prometheus_metrics(kt_entries: usize, queued_envelopes: usize) -> String {
+        format!(
+            "# HELP sonaraim_node_kt_entries_total Total Key Transparency log entries\n\
+             # TYPE sonaraim_node_kt_entries_total counter\n\
+             sonaraim_node_kt_entries_total {kt_entries}\n\
+             # HELP sonaraim_node_queued_envelopes Currently queued relay envelopes\n\
+             # TYPE sonaraim_node_queued_envelopes gauge\n\
+             sonaraim_node_queued_envelopes {queued_envelopes}\n"
         )
     }
 }

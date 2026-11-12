@@ -1,8 +1,9 @@
 //! Core library for `sonaraim-node`.
 //!
 //! Exports the zero-hardcode configuration loader, ephemeral P2P store-and-forward
-//! mailbox relay, Key Transparency Merkle tree log, P2P mesh gossip, durable snapshot
-//! and WAL storage, Redis RESP client, PSI blind service, HTTP REST server, and health status serializer.
+//! mailbox relay, Key Transparency Merkle tree log, P2P mesh gossip, live UDP gossip
+//! and `did:web` verifier, durable snapshot and WAL storage, Redis RESP client,
+//! PSI blind service, HTTP REST server, and health status serializer.
 
 pub mod config;
 pub mod health;
@@ -13,3 +14,4 @@ pub mod psi_service;
 pub mod redis_store;
 pub mod relay;
 pub mod storage;
+pub mod udp_gossip;
