@@ -1,14 +1,33 @@
 # API Reference (`sonaraim-node`)
 
-> Rust Library Interfaces and HTTP Health Endpoint Specification
+> HTTP REST Endpoints and Rust Library Interfaces exposed by `sonaraim-node`.
 
-## HTTP Endpoints
+## 1. Authentication & Security
+
+Endpoints that modify state (write routes) require a Bearer token when `NODE_API_AUTH_TOKEN` is configured:
+
+```http
+Authorization: Bearer <NODE_API_AUTH_TOKEN>
+```
+
+Protected write routes:
+
+- `POST /v1/relay/envelopes`
+- `POST /v1/relay/mailboxes/{mailbox_id}/ack`
+- `POST /v1/identity`
+- `POST /v1/p2p/peers`
+
+All other endpoints (`GET /health`, `GET /metrics`, `GET /v1/relay/mailboxes/{id}`, `GET /v1/identity/{did}`, `POST /v1/contacts/psi`, `POST /v1/media/presign`, etc.) are public.
+
+---
+
+## 2. Health & Telemetry Endpoints
 
 ### `GET /health`
 
-Returns the operational readiness, active ephemeral queue size, and Key Transparency Merkle log state of the node.
+Returns operational health status, queue sizes, and Merkle tree state.
 
-#### Response `200 OK`
+**Response (`200 OK`)**:
 
 ```json
 {
@@ -22,31 +41,321 @@ Returns the operational readiness, active ephemeral queue size, and Key Transpar
 }
 ```
 
-## Rust Crate Public API (`sonaraim_node`)
+### `GET /metrics`
 
-### `config::NodeConfig`
+Exposes Prometheus counters and gauges (`text/plain; version=0.0.4`).
 
-- `NodeConfig::from_env() -> Result<NodeConfig, ConfigError>`: Loads configuration from process environment variables.
-- `NodeConfig::from_map(vars: &HashMap<String, String>) -> Result<NodeConfig, ConfigError>`: Loads configuration from a key-value map for deterministic testing.
-- `NodeConfig::http_bind_address(&self) -> String`: Formats `<http_host>:<http_port>`.
+**Response Metrics Output (`200 OK`)**:
 
-### `relay::MailboxStore`
+```text
+# HELP sonaraim_node_kt_log_entries_total Total Key Transparency Merkle log entries
+# TYPE sonaraim_node_kt_log_entries_total counter
+sonaraim_node_kt_log_entries_total 12
+# HELP sonaraim_node_relay_queued_total Total queued store-and-forward envelopes
+# TYPE sonaraim_node_relay_queued_total gauge
+sonaraim_node_relay_queued_total 3
+```
 
-- `MailboxStore::new(ttl_seconds: u64) -> Self`: Initializes an ephemeral mailbox store with the configured TTL.
-- `MailboxStore::enqueue(&mut self, envelope: SealedEnvelope) -> String`: Enqueues a sealed envelope and returns its deterministic blind push wake-up token.
-- `MailboxStore::drain_active(&mut self, mailbox_id: &str, now_epoch_secs: u64) -> Vec<SealedEnvelope>`: Removes and returns all non-expired envelopes for `mailbox_id`.
-- `MailboxStore::purge_expired(&mut self, now_epoch_secs: u64) -> usize`: Evicts all expired envelopes across all mailboxes and returns the number of removed items.
-- `MailboxStore::total_queued(&self) -> usize`: Returns the current count of queued envelopes across all mailboxes.
+---
 
-### `merkle::KeyTransparencyLog`
+## 3. Ephemeral Relay & Mailbox Endpoints
 
-- `KeyTransparencyLog::new() -> Self`: Creates an empty append-only Key Transparency Merkle log.
-- `KeyTransparencyLog::append(&mut self, did: &str, key_commitment: &str, epoch_secs: u64) -> Result<(usize, String), MerkleError>`: Validates the DID (`did:sonaraim:*` or `did:web:*`), appends a new leaf entry, and returns `(leaf_index, tree_head_hash)`.
-- `KeyTransparencyLog::tree_head(&self) -> String`: Computes the current Merkle root hash in hexadecimal format.
-- `KeyTransparencyLog::generate_proof(&self, leaf_index: usize) -> Result<InclusionProof, MerkleError>`: Generates a cryptographic Merkle inclusion proof for the given leaf index.
-- `KeyTransparencyLog::verify_proof(proof: &InclusionProof) -> bool`: Verifies that the inclusion proof reconstructs the expected Merkle `tree_head`.
+### `POST /v1/relay/envelopes`
 
-### `health::HealthStatus`
+Submits an encrypted Sealed Sender envelope into the recipient's ephemeral mailbox queue.
 
-- `HealthStatus::from_state(config: &NodeConfig, relay: &MailboxStore, kt_log: &KeyTransparencyLog) -> Self`: Captures a point-in-time health snapshot.
-- `HealthStatus::to_json(&self) -> String`: Serializes the health snapshot into a deterministic JSON string.
+- **Auth**: Bearer token required.
+
+**Request Payload**:
+
+```json
+{
+  "envelope_id": "env_0193218a-7c40-7000-8000-1a2b3c4d5e6f",
+  "recipient_mailbox_id": "mbx_user_alice_99",
+  "payload_hex": "48656c6c6f20536f6e617261696d",
+  "ephemeral_pub_key_hex": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+  "ttl_seconds": 604800
+}
+```
+
+**Response (`202 Accepted`)**:
+
+```json
+{
+  "status": "queued",
+  "envelope_id": "env_0193218a-7c40-7000-8000-1a2b3c4d5e6f",
+  "recipient_mailbox_id": "mbx_user_alice_99",
+  "blind_wake_token": "a1b2c3d4e5f6..."
+}
+```
+
+### `GET /v1/relay/mailboxes/{mailbox_id}`
+
+Fetches all non-expired envelopes queued for the specified mailbox.
+
+**Response (`200 OK`)**:
+
+```json
+{
+  "mailbox_id": "mbx_user_alice_99",
+  "count": 1,
+  "envelopes": [
+    {
+      "envelope_id": "env_0193218a-7c40-7000-8000-1a2b3c4d5e6f",
+      "recipient_mailbox_id": "mbx_user_alice_99",
+      "payload_hex": "48656c6c6f20536f6e617261696d",
+      "created_at_epoch_secs": 1700000000,
+      "ttl_seconds": 604800
+    }
+  ]
+}
+```
+
+### `POST /v1/relay/mailboxes/{mailbox_id}/ack`
+
+Acknowledges received envelope IDs, evicts them from the active queue, and triggers atomic WAL compaction.
+
+- **Auth**: Bearer token required.
+
+**Request Payload**:
+
+```json
+{
+  "envelope_ids": ["env_0193218a-7c40-7000-8000-1a2b3c4d5e6f"]
+}
+```
+
+**Response (`200 OK`)**:
+
+```json
+{
+  "status": "acknowledged",
+  "mailbox_id": "mbx_user_alice_99",
+  "evicted_count": 1
+}
+```
+
+---
+
+## 4. Key Transparency & Identity Endpoints
+
+### `POST /v1/identity`
+
+Registers or updates a public identity commitment in the Key Transparency Merkle log.
+
+- **Auth**: Bearer token required.
+
+**Request Payload**:
+
+```json
+{
+  "did": "did:web:bank.example.com",
+  "key_commitment": "ed25519:MCowBQYDK2VwAyEA...",
+  "phone_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+}
+```
+
+**Response (`201 Created`)**:
+
+```json
+{
+  "status": "committed",
+  "did": "did:web:bank.example.com",
+  "leaf_index": 12,
+  "tree_head": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+}
+```
+
+### `GET /v1/identity/{did}`
+
+Returns the verified DID identity entry, signing key commitment, and cryptographic Merkle inclusion proof. Supports percent-encoded DID paths (e.g., `did%3Aweb%3Abank.example.com`).
+
+**Response (`200 OK`)**:
+
+```json
+{
+  "did": "did:web:bank.example.com",
+  "key_commitment": "ed25519:MCowBQYDK2VwAyEA...",
+  "leaf_index": 12,
+  "merkle_proof": {
+    "tree_size": 13,
+    "leaf_index": 12,
+    "root_hash": "e3b0c442...",
+    "inclusion_path": ["sha256:4a1b...", "sha256:9c8d..."]
+  }
+}
+```
+
+### `GET /v1/identity/by-phone/{token}`
+
+Looks up a registered DID by blinded or hashed phone number token.
+
+**Response (`200 OK`)**:
+
+```json
+{
+  "status": "found",
+  "did": "did:sonaraim:alice",
+  "token": "e3b0c44298fc1c14..."
+}
+```
+
+### `GET /v1/identity/anchors/latest`
+
+Returns the latest L2 anchor checkpoint receipt for the Merkle tree head.
+
+**Response (`200 OK`)**:
+
+```json
+{
+  "status": "anchored",
+  "tree_size": 13,
+  "tree_head": "e3b0c442...",
+  "epoch_secs": 1700000000,
+  "anchor_proof": "l2:0xabcdef..."
+}
+```
+
+---
+
+## 5. P2P Federation & Gossip Endpoints
+
+### `GET /v1/p2p/sync`
+
+Returns local Merkle tree size, root hash, and known peer tree heads.
+
+**Response (`200 OK`)**:
+
+```json
+{
+  "node_id": "node-primary-01",
+  "tree_size": 13,
+  "tree_head": "e3b0c442...",
+  "peers_count": 2,
+  "peers": [
+    { "peer_id": "node-peer-02", "tree_size": 13, "tree_head": "e3b0c442..." }
+  ]
+}
+```
+
+### `POST /v1/p2p/gossip`
+
+Ingests a gossiped `SignedTreeHead` datagram from a peer node.
+
+**Request Payload**:
+
+```json
+{
+  "node_id": "node-peer-02",
+  "tree_size": 13,
+  "root_hash": "e3b0c442...",
+  "signature_hex": "4a5b6c...",
+  "timestamp_secs": 1700000000
+}
+```
+
+**Response (`200 OK`)**:
+
+```json
+{
+  "status": "ingested",
+  "equivocation_detected": false
+}
+```
+
+### `POST /v1/p2p/peers`
+
+Registers or updates a peer's QUIC multiaddr and HTTP RPC endpoint.
+
+- **Auth**: Bearer token required.
+
+**Request Payload**:
+
+```json
+{
+  "peer_id": "node-peer-02",
+  "rpc_url": "http://node2.sonaraim.internal:8040",
+  "multiaddr": "/ip4/10.0.0.2/udp/4001/quic-v1"
+}
+```
+
+**Response (`200 OK`)**:
+
+```json
+{
+  "status": "registered",
+  "peer_id": "node-peer-02"
+}
+```
+
+### `GET /v1/p2p/peers`
+
+Lists all connected and registered P2P mesh peers.
+
+---
+
+## 6. Private Set Intersection & Media Endpoints
+
+### `POST /v1/contacts/psi`
+
+Performs blind contact discovery. Evaluates blinded phone tokens without learning the user's contacts.
+
+**Request Payload**:
+
+```json
+{
+  "blinded_tokens": [
+    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "4a5b6c7d8e9f..."
+  ]
+}
+```
+
+**Response (`200 OK`)**:
+
+```json
+{
+  "matches": [
+    {
+      "token": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "did": "did:sonaraim:alice"
+    }
+  ]
+}
+```
+
+### `POST /v1/media/presign`
+
+Generates an S3/MinIO presigned PUT upload URL for client-side encrypted media attachments.
+
+**Request Payload**:
+
+```json
+{
+  "object_key": "attachments/0193218a-media-01.enc",
+  "content_type": "application/octet-stream",
+  "size_bytes": 1048576
+}
+```
+
+**Response (`200 OK`)**:
+
+```json
+{
+  "upload_url": "http://minio:9000/media-vault/attachments/0193218a-media-01.enc?X-Amz-Signature=...",
+  "object_key": "attachments/0193218a-media-01.enc",
+  "expires_in_secs": 900
+}
+```
+
+---
+
+## 7. Rust Crate Public Interfaces (`sonaraim_node`)
+
+- **`config::NodeConfig`**: Environment variable loader and validator (`from_env`, `from_map`).
+- **`relay::MailboxStore`**: Ephemeral envelope queue with TTL eviction (`enqueue`, `drain_active`, `purge_expired`).
+- **`merkle::KeyTransparencyLog`**: Append-only cryptographic ledger (`append`, `tree_head`, `generate_proof`, `verify_proof`).
+- **`health::HealthStatus`**: Health capture and Prometheus metric formatting (`format_prometheus_metrics`).
+- **`udp_gossip::UdpGossipNode`**: Live non-blocking UDP socket wrapper for signed tree head gossip (`bind`, `send_sth`, `ingest_gossip_json`).
+- **`s3_wal_maintenance`**: S3 uploader and atomic WAL compaction (`compact_wal_file`, `put_s3_object_http`).
+- **`http_server`**: Std-only HTTP server runner (`run_server`, `start_test_server`).
