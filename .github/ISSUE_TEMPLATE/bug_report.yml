@@ -1,0 +1,24 @@
+name: Bug Report
+description: Report a defect or unexpected behavior in Sonaraim
+title: "fix(scope): short summary"
+labels: ["type::bug", "status::todo"]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: Clear explanation of the bug and expected behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to Reproduce
+      description: Commands, endpoints, or UI actions to reproduce the issue.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Service version/commit, OS, Docker/Node/Rust version.

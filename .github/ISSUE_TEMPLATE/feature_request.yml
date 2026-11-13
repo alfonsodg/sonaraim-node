@@ -1,0 +1,19 @@
+name: Feature Request
+description: Propose a new capability or enhancement for Sonaraim
+title: "feat(scope): short summary"
+labels: ["type::feature", "status::todo"]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Problem & Proposal
+      description: Describe the user need and proposed solution.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance Criteria
+      description: Testable checklist items defining completion.
+    validations:
+      required: true
