@@ -13,11 +13,14 @@ Authorization: Bearer <NODE_API_AUTH_TOKEN>
 Protected write routes:
 
 - `POST /v1/relay/envelopes`
+- `POST /v1/push/register`
+- `POST /v1/relay/signals`
 - `POST /v1/relay/mailboxes/{mailbox_id}/ack`
 - `POST /v1/identity`
 - `POST /v1/p2p/peers`
+- `POST /v1/p2p/gossip`
 
-All other endpoints (`GET /health`, `GET /metrics`, `GET /v1/relay/mailboxes/{id}`, `GET /v1/identity/{did}`, `POST /v1/contacts/psi`, `POST /v1/media/presign`, etc.) are public.
+All other endpoints (`GET /health`, `GET /metrics`, `GET /v1/relay/mailboxes/{id}`, `GET /v1/relay/signals/{id}`, `GET /v1/identity/{did}`, `POST /v1/contacts/psi`, `POST /v1/media/presign`, etc.) are public.
 
 ---
 
@@ -82,12 +85,12 @@ Submits an encrypted Sealed Sender envelope into the recipient's ephemeral mailb
 
 ```json
 {
-  "status": "queued",
-  "envelope_id": "env_0193218a-7c40-7000-8000-1a2b3c4d5e6f",
-  "recipient_mailbox_id": "mbx_user_alice_99",
-  "blind_wake_token": "a1b2c3d4e5f6..."
+  "wake_up_token": "a1b2c3d4e5f60718...",
+  "wake_up_queued": true
 }
 ```
+
+The response returns a blind wake-up token alongside `wake_up_queued` (`true` if a wake-up push notification was dispatched to the recipient's registered device push token).
 
 ### `GET /v1/relay/mailboxes/{mailbox_id}`
 
@@ -132,6 +135,95 @@ Acknowledges received envelope IDs, evicts them from the active queue, and trigg
   "status": "acknowledged",
   "mailbox_id": "mbx_user_alice_99",
   "evicted_count": 1
+}
+```
+
+### `POST /v1/push/register`
+
+Registers a blind push notification token for an anonymous recipient mailbox. Device tokens are stored and verified as SHA-256 hashes (`token_hash`), ensuring zero plaintext token or sender metadata leakage at the relay layer.
+
+- **Auth**: Bearer token required.
+
+**Request Payload**:
+
+```json
+{
+  "mailbox_id": "mbx_user_alice_99",
+  "platform": "apns",
+  "device_token": "98a7b6c5d4e3f210a1b2c3d4e5f6...",
+  "endpoint_hint": "https://push.apple.com"
+}
+```
+
+Supported `platform` values: `apns`, `fcm`, `webpush`.
+
+**Response (`200 OK`)**:
+
+```json
+{
+  "status": "ok",
+  "registered": true,
+  "mailbox_id": "mbx_user_alice_99",
+  "platform": "apns",
+  "token_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+}
+```
+
+### `POST /v1/relay/signals`
+
+Records an ephemeral conversational signal (typing indicator, delivery receipt, read receipt) for an active recipient mailbox. Signals are kept in-memory with automatic TTL expiration and are never committed to WAL storage.
+
+- **Auth**: Bearer token required.
+
+**Request Payload**:
+
+```json
+{
+  "mailbox_id": "mbx_user_alice_99",
+  "sender_did": "did:sonaraim:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH",
+  "signal_type": "typing",
+  "envelope_id": "env_0193218a-7c40-7000-8000-1a2b3c4d5e6f"
+}
+```
+
+Supported `signal_type` values:
+
+- `typing`: Sender is composing a message (default TTL 30 seconds).
+- `delivered`: Message envelope was delivered to the recipient device (default TTL 300 seconds).
+- `read`: Message envelope was opened and read by the recipient (default TTL 300 seconds).
+
+**Response (`200 OK`)**:
+
+```json
+{
+  "status": "ok",
+  "recorded": true,
+  "mailbox_id": "mbx_user_alice_99",
+  "signal_type": "typing",
+  "expires_at_epoch": 1700000030
+}
+```
+
+### `GET /v1/relay/signals/{mailbox_id}`
+
+Drains and returns all active non-expired ephemeral signals for the recipient's mailbox. Retrieved signals are atomically removed from memory upon retrieval.
+
+- **Auth**: Public endpoint.
+
+**Response (`200 OK`)**:
+
+```json
+{
+  "mailbox_id": "mbx_user_alice_99",
+  "signals": [
+    {
+      "mailbox_id": "mbx_user_alice_99",
+      "sender_did": "did:sonaraim:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH",
+      "signal_type": "typing",
+      "envelope_id": null,
+      "expires_at_epoch": 1700000030
+    }
+  ]
 }
 ```
 
