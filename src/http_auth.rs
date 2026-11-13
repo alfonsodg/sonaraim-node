@@ -69,6 +69,8 @@ pub fn is_protected_write_route(method: &str, path: &str) -> bool {
     method == "POST"
         && (path == "/v1/identity"
             || path == "/v1/relay/envelopes"
+            || path == "/v1/relay/signals"
+            || path == "/v1/push/register"
             || path == "/v1/p2p/gossip"
             || path == "/v1/p2p/peers"
             || (path.starts_with("/v1/relay/mailboxes/") && path.ends_with("/ack")))

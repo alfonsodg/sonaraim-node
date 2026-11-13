@@ -9,10 +9,14 @@ use crate::http_federation::{handle_get_peers, handle_get_sync, handle_post_peer
 use crate::http_identity::{
     handle_get_identity, handle_get_identity_by_phone, handle_post_identity,
 };
-use crate::http_relay::{handle_ack_mailbox, handle_get_mailbox, handle_post_envelope};
+use crate::http_relay::{
+    handle_ack_mailbox, handle_get_mailbox, handle_get_signals, handle_post_envelope,
+    handle_post_push_register, handle_post_signal,
+};
 use crate::merkle::{IdentityLogEntry, KeyTransparencyLog};
 use crate::p2p::P2pMeshNode;
 use crate::psi_service::{build_l2_anchor_receipt, handle_presign_json, handle_psi_json};
+use crate::push_signals::PushSignalRegistry;
 use crate::redis_store::RedisRespClient;
 use crate::relay::MailboxStore;
 use crate::storage::{replay_wal_into_log, wal_path_from_signing_key};
@@ -36,6 +40,7 @@ pub struct NodeState {
     pub p2p_mesh: P2pMeshNode,
     pub wal_path: Option<PathBuf>,
     pub redis: Option<RedisRespClient>,
+    pub push_signals: PushSignalRegistry,
 }
 
 impl NodeState {
@@ -72,6 +77,7 @@ impl NodeState {
             p2p_mesh,
             wal_path,
             redis,
+            push_signals: PushSignalRegistry::new(),
         }
     }
 }
@@ -180,6 +186,12 @@ fn dispatch(
             handle_get_identity(&st, &p["/v1/identity/".len()..])
         }
         ("POST", "/v1/relay/envelopes") => handle_post_envelope(&mut st, body),
+        ("POST", "/v1/push/register") => handle_post_push_register(&mut st, body),
+        ("POST", "/v1/relay/signals") => handle_post_signal(&mut st, body),
+        ("GET", p) if p.starts_with("/v1/relay/signals/") => {
+            let mbx = &p["/v1/relay/signals/".len()..];
+            handle_get_signals(&mut st, mbx)
+        }
         ("POST", p) if p.starts_with("/v1/relay/mailboxes/") && p.ends_with("/ack") => {
             let mbx = &p["/v1/relay/mailboxes/".len()..p.len() - "/ack".len()];
             handle_ack_mailbox(&mut st, mbx, body)

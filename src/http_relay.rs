@@ -2,6 +2,7 @@
 
 use crate::http_auth::err_json;
 use crate::http_server::{now_secs, NodeState};
+use crate::push_signals::{EphemeralSignal, PushPlatform, SignalType};
 use crate::relay::SealedEnvelope;
 use crate::s3_wal_maintenance::compact_wal_file;
 use crate::storage::{extract_json_str, extract_json_str_array};
@@ -36,6 +37,7 @@ pub fn handle_post_envelope(st: &mut NodeState, body: &str) -> (u16, &'static st
         ciphertext: payload_hex.as_bytes().to_vec(),
         created_at_epoch_secs: now_secs(),
     });
+    let wake_up_queued = st.push_signals.record_wake_up(&mbx);
     if !replicated {
         let peers = st.p2p_mesh.peers();
         crate::http_federation::replicate_envelope_to_peers(&peers, &env_id, &mbx, &payload_hex);
@@ -43,7 +45,105 @@ pub fn handle_post_envelope(st: &mut NodeState, body: &str) -> (u16, &'static st
     (
         202,
         "Accepted",
-        format!("{{\"wake_up_token\":\"{token}\"}}"),
+        format!("{{\"wake_up_token\":\"{token}\",\"wake_up_queued\":{wake_up_queued}}}"),
+    )
+}
+
+/// Handles `POST /v1/push/register`.
+pub fn handle_post_push_register(st: &mut NodeState, body: &str) -> (u16, &'static str, String) {
+    let (Some(mbx), Some(plat_str), Some(tok)) = (
+        extract_json_str(body, "mailbox_id"),
+        extract_json_str(body, "platform"),
+        extract_json_str(body, "device_token"),
+    ) else {
+        return (
+            400,
+            "Bad Request",
+            err_json(
+                "INVALID_BODY",
+                "missing mailbox_id, platform, or device_token",
+            ),
+        );
+    };
+    let Some(platform) = PushPlatform::parse(&plat_str) else {
+        return (
+            400,
+            "Bad Request",
+            err_json(
+                "INVALID_PLATFORM",
+                "supported platforms: apns, fcm, webpush",
+            ),
+        );
+    };
+    let hint = extract_json_str(body, "endpoint_hint");
+    let reg =
+        st.push_signals
+            .register_push_token(&mbx, platform, &tok, hint.as_deref(), now_secs());
+    (
+        200,
+        "OK",
+        format!(
+            "{{\"status\":\"ok\",\"registered\":true,\"mailbox_id\":\"{}\",\"platform\":\"{}\",\"token_hash\":\"{}\"}}",
+            reg.mailbox_id,
+            reg.platform.as_str(),
+            reg.token_hash
+        ),
+    )
+}
+
+/// Handles `POST /v1/relay/signals`.
+pub fn handle_post_signal(st: &mut NodeState, body: &str) -> (u16, &'static str, String) {
+    let (Some(mbx), Some(sender), Some(sig_str)) = (
+        extract_json_str(body, "mailbox_id"),
+        extract_json_str(body, "sender_did"),
+        extract_json_str(body, "signal_type"),
+    ) else {
+        return (
+            400,
+            "Bad Request",
+            err_json(
+                "INVALID_BODY",
+                "missing mailbox_id, sender_did, or signal_type",
+            ),
+        );
+    };
+    let Some(sig_type) = SignalType::parse(&sig_str) else {
+        return (
+            400,
+            "Bad Request",
+            err_json(
+                "INVALID_SIGNAL_TYPE",
+                "supported signals: typing, delivered, read",
+            ),
+        );
+    };
+    let env_id = extract_json_str(body, "envelope_id");
+    let sig = st
+        .push_signals
+        .record_signal(&mbx, &sender, sig_type, env_id.as_deref(), now_secs());
+    (
+        200,
+        "OK",
+        format!(
+            "{{\"status\":\"ok\",\"recorded\":true,\"mailbox_id\":\"{}\",\"signal_type\":\"{}\",\"expires_at_epoch\":{}}}",
+            sig.mailbox_id,
+            sig.signal_type.as_str(),
+            sig.expires_at_epoch
+        ),
+    )
+}
+
+/// Handles `GET /v1/relay/signals/:mailbox_id`.
+pub fn handle_get_signals(st: &mut NodeState, mailbox_id: &str) -> (u16, &'static str, String) {
+    let signals = st.push_signals.drain_signals(mailbox_id, now_secs());
+    let items: Vec<String> = signals.iter().map(EphemeralSignal::to_json).collect();
+    (
+        200,
+        "OK",
+        format!(
+            "{{\"mailbox_id\":\"{mailbox_id}\",\"signals\":[{}]}}",
+            items.join(",")
+        ),
     )
 }
 

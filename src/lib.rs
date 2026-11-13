@@ -15,6 +15,7 @@ pub mod http_server;
 pub mod merkle;
 pub mod p2p;
 pub mod psi_service;
+pub mod push_signals;
 pub mod redis_store;
 pub mod relay;
 pub mod s3_wal_maintenance;
