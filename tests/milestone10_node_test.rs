@@ -26,6 +26,20 @@ fn config_with_token(token: Option<&str>) -> NodeConfig {
     NodeConfig::from_map(&vars).expect("valid config")
 }
 
+fn config_dev_noauth() -> NodeConfig {
+    let mut vars = HashMap::new();
+    vars.insert("NODE_ID".to_string(), "node-m10-01".to_string());
+    vars.insert("NODE_HTTP_HOST".to_string(), "127.0.0.1".to_string());
+    vars.insert("NODE_HTTP_PORT".to_string(), "8040".to_string());
+    vars.insert(
+        "NODE_P2P_LISTEN_ADDR".to_string(),
+        "/ip4/127.0.0.1/udp/0/quic-v1".to_string(),
+    );
+    vars.insert("NODE_ENVELOPE_TTL_SECONDS".to_string(), "3600".to_string());
+    vars.insert("NODE_ALLOW_DEV_NOAUTH".to_string(), "true".to_string());
+    NodeConfig::from_map(&vars).expect("valid dev config")
+}
+
 fn send_http_with_auth(
     addr: &str,
     method: &str,
@@ -198,7 +212,7 @@ fn issue9_s3_object_upload_and_wal_compaction() {
 #[test]
 fn issue10_relay_full_envelope_items_and_ack() {
     let state = NodeState::new(
-        config_with_token(None),
+        config_dev_noauth(),
         MailboxStore::new(3600),
         KeyTransparencyLog::default(),
     );
@@ -261,6 +275,7 @@ fn config_with_id(node_id: &str) -> NodeConfig {
         "/ip4/127.0.0.1/udp/0/quic-v1".to_string(),
     );
     vars.insert("NODE_ENVELOPE_TTL_SECONDS".to_string(), "3600".to_string());
+    vars.insert("NODE_ALLOW_DEV_NOAUTH".to_string(), "true".to_string());
     NodeConfig::from_map(&vars).expect("valid config")
 }
 
@@ -339,7 +354,7 @@ fn issue11_multi_node_federation_replication_and_equivocation_detection() {
 #[test]
 fn issue12_phone_token_psi_and_routing() {
     let state = NodeState::new(
-        config_with_token(None),
+        config_dev_noauth(),
         MailboxStore::new(3600),
         KeyTransparencyLog::default(),
     );
@@ -380,4 +395,64 @@ fn issue12_phone_token_psi_and_routing() {
         "",
     );
     assert_eq!(st_404, 404);
+}
+
+#[test]
+fn issue14_auth_fails_closed_when_token_unset_and_supports_dev_opt_in() {
+    // verify_bearer_token must fail closed when expected_token is None or empty
+    assert!(!verify_bearer_token(
+        "POST /v1/identity HTTP/1.1\r\nHost: localhost\r\n",
+        None
+    ));
+    assert!(!verify_bearer_token(
+        "POST /v1/identity HTTP/1.1\r\nAuthorization: Bearer anything\r\n",
+        None
+    ));
+    assert!(!verify_bearer_token(
+        "POST /v1/identity HTTP/1.1\r\nAuthorization: Bearer anything\r\n",
+        Some("   ")
+    ));
+
+    // HTTP write endpoints must return 401 when NODE_API_AUTH_TOKEN is unset and dev opt-in is absent
+    let closed_state = NodeState::new(
+        config_with_token(None),
+        MailboxStore::new(3600),
+        KeyTransparencyLog::default(),
+    );
+    let (closed_addr, _h1) = start_test_server(closed_state).expect("start closed server");
+    let (st_closed, _) = send_http_with_auth(
+        &closed_addr,
+        "POST",
+        "/v1/identity",
+        None,
+        r#"{"did":"did:sonaraim:closed-user","key_commitment":"pk-closed"}"#,
+    );
+    assert_eq!(st_closed, 401);
+
+    // Explicit NODE_ALLOW_DEV_NOAUTH=true allows unauthenticated dev writes when token is unset
+    let mut dev_vars = HashMap::new();
+    dev_vars.insert("NODE_ID".to_string(), "node-m10-dev".to_string());
+    dev_vars.insert("NODE_HTTP_HOST".to_string(), "127.0.0.1".to_string());
+    dev_vars.insert("NODE_HTTP_PORT".to_string(), "8041".to_string());
+    dev_vars.insert(
+        "NODE_P2P_LISTEN_ADDR".to_string(),
+        "/ip4/127.0.0.1/udp/0/quic-v1".to_string(),
+    );
+    dev_vars.insert("NODE_ENVELOPE_TTL_SECONDS".to_string(), "3600".to_string());
+    dev_vars.insert("NODE_ALLOW_DEV_NOAUTH".to_string(), "true".to_string());
+    let dev_cfg = NodeConfig::from_map(&dev_vars).expect("valid dev config");
+    let dev_state = NodeState::new(
+        dev_cfg,
+        MailboxStore::new(3600),
+        KeyTransparencyLog::default(),
+    );
+    let (dev_addr, _h2) = start_test_server(dev_state).expect("start dev server");
+    let (st_dev, _) = send_http_with_auth(
+        &dev_addr,
+        "POST",
+        "/v1/identity",
+        None,
+        r#"{"did":"did:sonaraim:dev-user","key_commitment":"pk-dev"}"#,
+    );
+    assert_eq!(st_dev, 201);
 }

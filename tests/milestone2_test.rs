@@ -1,7 +1,7 @@
 //! TDD integration tests for Milestone 2 & 5 (`sonaraim-node` #2, #3, #4, #5):
 //! - #2: P2P mesh gossip, SignedTreeHead equivocation detection, envelope forwarding
 //! - #3: Live HTTP REST server (`GET /health`, `POST /v1/identity`, `GET /v1/identity/{did}`,
-//!       `POST /v1/relay/envelopes`, `GET /v1/relay/mailboxes/{id}`)
+//!   `POST /v1/relay/envelopes`, `GET /v1/relay/mailboxes/{id}`)
 //! - #4: Durable snapshot persistence & S3 presigned media URL generation (`POST /v1/media/presign`)
 //! - #5: PSI blind contact discovery (`POST /v1/contacts/psi`) & L2 anchor receipts (`GET /v1/identity/anchors/latest`)
 
@@ -26,6 +26,7 @@ fn sample_config() -> NodeConfig {
         "/ip4/127.0.0.1/udp/0/quic-v1".to_string(),
     );
     vars.insert("NODE_ENVELOPE_TTL_SECONDS".to_string(), "3600".to_string());
+    vars.insert("NODE_ALLOW_DEV_NOAUTH".to_string(), "true".to_string());
     NodeConfig::from_map(&vars).expect("sample config must be valid")
 }
 

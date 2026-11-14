@@ -3,7 +3,7 @@
 use crate::config::NodeConfig;
 use crate::health::HealthStatus;
 use crate::http_auth::{
-    err_json, is_protected_write_route, parse_http_request, verify_bearer_token,
+    authorize_write_request, err_json, is_protected_write_route, parse_http_request,
 };
 use crate::http_federation::{handle_get_peers, handle_get_sync, handle_post_peers};
 use crate::http_identity::{
@@ -152,7 +152,11 @@ fn dispatch(
         );
     };
     if is_protected_write_route(method, path)
-        && !verify_bearer_token(headers, st.config.api_auth_token.as_deref())
+        && !authorize_write_request(
+            headers,
+            st.config.api_auth_token.as_deref(),
+            st.config.allow_unauthenticated_dev,
+        )
     {
         return (
             401,
