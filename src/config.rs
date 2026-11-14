@@ -51,6 +51,9 @@ pub struct NodeConfig {
     pub envelope_ttl_seconds: u64,
     /// Optional operator/relay Bearer token for write endpoints (`NODE_API_AUTH_TOKEN`).
     pub api_auth_token: Option<String>,
+    /// Explicit development/test opt-in allowing unauthenticated write routes when
+    /// `NODE_API_AUTH_TOKEN` is unset (`NODE_ALLOW_DEV_NOAUTH=true`).
+    pub allow_unauthenticated_dev: bool,
 }
 
 impl NodeConfig {
@@ -68,6 +71,7 @@ impl NodeConfig {
             "NODE_P2P_LISTEN_ADDR",
             "NODE_ENVELOPE_TTL_SECONDS",
             "NODE_API_AUTH_TOKEN",
+            "NODE_ALLOW_DEV_NOAUTH",
         ] {
             if let Ok(val) = env::var(key) {
                 vars.insert(key.to_string(), val);
@@ -127,6 +131,8 @@ impl NodeConfig {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
 
+        let allow_unauthenticated_dev = Self::parse_optional_bool(vars, "NODE_ALLOW_DEV_NOAUTH")?;
+
         Ok(Self {
             node_id,
             http_host,
@@ -134,6 +140,7 @@ impl NodeConfig {
             p2p_listen_addr,
             envelope_ttl_seconds,
             api_auth_token,
+            allow_unauthenticated_dev,
         })
     }
 
@@ -148,6 +155,19 @@ impl NodeConfig {
         match vars.get(key) {
             Some(val) if !val.trim().is_empty() => Ok(val.trim().to_string()),
             _ => Err(ConfigError::MissingVariable(key.to_string())),
+        }
+    }
+
+    /// Parses an optional boolean environment variable (`"true"`/`"false"`), defaulting to `false`.
+    fn parse_optional_bool(vars: &HashMap<String, String>, key: &str) -> Result<bool, ConfigError> {
+        match vars.get(key).map(|v| v.trim()).filter(|v| !v.is_empty()) {
+            None => Ok(false),
+            Some(val) if val.eq_ignore_ascii_case("true") => Ok(true),
+            Some(val) if val.eq_ignore_ascii_case("false") => Ok(false),
+            Some(_) => Err(ConfigError::InvalidValue {
+                key: key.to_string(),
+                reason: "must be 'true' or 'false'".to_string(),
+            }),
         }
     }
 }

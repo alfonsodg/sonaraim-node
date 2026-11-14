@@ -19,6 +19,7 @@ fn sample_config() -> NodeConfig {
         "/ip4/127.0.0.1/udp/0/quic-v1".to_string(),
     );
     vars.insert("NODE_ENVELOPE_TTL_SECONDS".to_string(), "3600".to_string());
+    vars.insert("NODE_ALLOW_DEV_NOAUTH".to_string(), "true".to_string());
     NodeConfig::from_map(&vars).expect("sample config must be valid")
 }
 
