@@ -108,8 +108,21 @@ pub fn start_test_server(state: NodeState) -> Result<(String, JoinHandle<()>), s
 
 /// Runs the blocking HTTP server on `config.http_bind_address()`.
 pub fn run_server(state: NodeState) -> Result<(), std::io::Error> {
-    let listener = TcpListener::bind(state.config.http_bind_address())?;
-    let shared = Arc::new(Mutex::new(state));
+    run_server_shared(Arc::new(Mutex::new(state)))
+}
+
+/// Runs the blocking HTTP server over an already-shared [`NodeState`].
+///
+/// Used by the daemon so the gossip thread and the HTTP listener share one
+/// mesh: gossip ingested over UDP is visible to HTTP handlers and vice versa.
+pub fn run_server_shared(shared: Arc<Mutex<NodeState>>) -> Result<(), std::io::Error> {
+    let bind = {
+        let st = shared
+            .lock()
+            .map_err(|_| std::io::Error::other("run_server: lock poisoned"))?;
+        st.config.http_bind_address()
+    };
+    let listener = TcpListener::bind(bind)?;
     for stream in listener.incoming().flatten() {
         let _ = handle_connection(stream, &shared);
     }

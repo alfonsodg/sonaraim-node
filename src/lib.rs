@@ -10,6 +10,7 @@ pub mod crypto;
 pub mod did_web;
 pub mod envelope_wal;
 pub mod federation_client;
+pub mod gossip_daemon;
 pub mod health;
 pub mod http_auth;
 pub mod http_federation;
