@@ -4,14 +4,17 @@ use crate::federation_client::replicate_identity_to_peers;
 use crate::http_auth::err_json;
 use crate::http_server::{now_secs, NodeState};
 use crate::merkle::{IdentityLogEntry, KeyTransparencyLog};
-use crate::p2p::SignedTreeHead;
+use crate::p2p::{sign_tree_head, SignedTreeHead};
 use crate::storage::{append_wal_entry, extract_json_str, WalEntry};
 use crate::udp_gossip::verify_did_web_document;
 
 /// Handles `GET /v1/identity/:did`.
 pub fn handle_get_identity(st: &NodeState, did: &str) -> (u16, &'static str, String) {
     if let Some(e) = st.did_index.get(did) {
-        let b2b = e.did.starts_with("did:web:");
+        // `did:web:` DIDs are only verified via live document resolution
+        // (fetched over HTTPS with a TTL cache); a prefix match alone proves
+        // nothing and must never grant `verified_b2b`.
+        let b2b = did.starts_with("did:web:") && crate::did_web::verify_did_web_resolved(did);
         let th = st.kt_log.tree_head();
         let j = format!(
             "{{\"did\":\"{}\",\"verified_b2b\":{b2b},\"leaf_hash\":\"{}\",\"tree_head\":\"{th}\"}}",
@@ -61,16 +64,20 @@ pub fn handle_post_identity(st: &mut NodeState, body: &str) -> (u16, &'static st
             err_json("INVALID_BODY", "missing did or key_commitment"),
         );
     };
-    if did.starts_with("did:web:")
-        && body.contains("\"did_document_json\"")
-        && !extract_json_str(body, "did_document_json")
-            .is_some_and(|doc| verify_did_web_document(&did, &doc))
-    {
-        return (
-            400,
-            "Bad Request",
-            err_json("INVALID_DID_WEB_DOC", "did:web invalid"),
-        );
+    if did.starts_with("did:web:") {
+        // Inline document check stays optional and advisory. Authoritative
+        // verification happens at read time via live HTTPS resolution
+        // (`verify_did_web_resolved`), never at registration from a prefix.
+        if body.contains("\"did_document_json\"")
+            && !extract_json_str(body, "did_document_json")
+                .is_some_and(|doc| verify_did_web_document(&did, &doc))
+        {
+            return (
+                400,
+                "Bad Request",
+                err_json("INVALID_DID_WEB_DOC", "did:web invalid"),
+            );
+        }
     }
     let replicated = body.contains("\"replicated\":true") || body.contains("\"replicated\": true");
     let phone_token =
@@ -88,10 +95,19 @@ pub fn handle_post_identity(st: &mut NodeState, body: &str) -> (u16, &'static st
             }
             let leaf_hash = KeyTransparencyLog::hash_leaf(index, &did, &commit, epoch);
             if !replicated {
+                let seed = st.config.sth_signing_seed();
+                let (signer_pubkey_hex, signature_hex) = sign_tree_head(
+                    &st.config.node_id,
+                    st.kt_log.len(),
+                    &st.kt_log.tree_head(),
+                    &seed,
+                );
                 let sth = SignedTreeHead {
                     node_id: st.config.node_id.clone(),
                     tree_size: st.kt_log.len(),
                     root_hash: st.kt_log.tree_head(),
+                    signer_pubkey_hex,
+                    signature_hex,
                 };
                 let peers = st.p2p_mesh.peers();
                 if let Err(e) =

@@ -72,12 +72,16 @@ impl UdpGossipNode {
 #[must_use]
 pub fn encode_tree_head_json(sth: &SignedTreeHead) -> String {
     format!(
-        "{{\"node_id\":\"{}\",\"tree_size\":{},\"root_hash\":\"{}\"}}",
-        sth.node_id, sth.tree_size, sth.root_hash
+        "{{\"node_id\":\"{}\",\"tree_size\":{},\"root_hash\":\"{}\",\"signer_pubkey_hex\":\"{}\",\"signature_hex\":\"{}\"}}",
+        sth.node_id, sth.tree_size, sth.root_hash, sth.signer_pubkey_hex, sth.signature_hex
     )
 }
 
 /// Decodes a [`SignedTreeHead`] from a JSON string.
+///
+/// Accepts both the signed encoding and the legacy unsigned encoding
+/// (`node_id`/`tree_size`/`root_hash` only); unsigned heads decode with empty
+/// key/signature fields and are rejected later by signature verification.
 #[must_use]
 pub fn decode_tree_head_json(raw: &str) -> Option<SignedTreeHead> {
     let node_id = extract_json_str(raw, "node_id")?;
@@ -87,10 +91,15 @@ pub fn decode_tree_head_json(raw: &str) -> Option<SignedTreeHead> {
         node_id,
         tree_size,
         root_hash,
+        signer_pubkey_hex: extract_json_str(raw, "signer_pubkey_hex").unwrap_or_default(),
+        signature_hex: extract_json_str(raw, "signature_hex").unwrap_or_default(),
     })
 }
 
 /// Processes a raw JSON `POST /v1/p2p/gossip` body against `mesh`, returning `(status, reason, json)`.
+///
+/// Heads with missing or invalid Ed25519 signatures are rejected with
+/// `400 INVALID_SIGNATURE` and never recorded.
 pub fn ingest_gossip_json(mesh: &mut P2pMeshNode, body: &str) -> (u16, &'static str, String) {
     let Some(sth) = decode_tree_head_json(body) else {
         return (
@@ -102,6 +111,11 @@ pub fn ingest_gossip_json(mesh: &mut P2pMeshNode, body: &str) -> (u16, &'static 
     };
     match mesh.accept_tree_head(sth) {
         Ok(()) => (200, "OK", "{\"accepted\":true}".to_string()),
+        Err(crate::p2p::P2pError::InvalidSignature(msg)) => (
+            400,
+            "Bad Request",
+            format!("{{\"error\":{{\"code\":\"INVALID_SIGNATURE\",\"message\":\"{msg}\"}}}}"),
+        ),
         Err(e) => (
             409,
             "Conflict",

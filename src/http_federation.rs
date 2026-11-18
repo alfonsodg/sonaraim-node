@@ -4,7 +4,7 @@ use crate::federation_client::{execute_http_request, extract_peer_auth_token};
 use crate::http_auth::err_json;
 use crate::http_server::{now_secs, NodeState};
 use crate::merkle::{IdentityLogEntry, KeyTransparencyLog};
-use crate::p2p::{PeerRecord, SignedTreeHead};
+use crate::p2p::{sign_tree_head, PeerRecord, SignedTreeHead};
 use crate::relay::SealedEnvelope;
 use crate::storage::extract_json_str;
 use crate::udp_gossip::{decode_tree_head_json, encode_tree_head_json};
@@ -156,10 +156,19 @@ pub fn handle_get_peers(st: &NodeState) -> (u16, &'static str, String) {
 
 /// Handles `GET /v1/p2p/sync`.
 pub fn handle_get_sync(st: &NodeState) -> (u16, &'static str, String) {
+    let seed = st.config.sth_signing_seed();
+    let (signer_pubkey_hex, signature_hex) = sign_tree_head(
+        &st.config.node_id,
+        st.kt_log.len(),
+        &st.kt_log.tree_head(),
+        &seed,
+    );
     let sth = SignedTreeHead {
         node_id: st.config.node_id.clone(),
         tree_size: st.kt_log.len(),
         root_hash: st.kt_log.tree_head(),
+        signer_pubkey_hex,
+        signature_hex,
     };
     let th_json = encode_tree_head_json(&sth);
     let ids: Vec<String> = st

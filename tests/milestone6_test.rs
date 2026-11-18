@@ -8,7 +8,7 @@
 use sonaraim_node::config::NodeConfig;
 use sonaraim_node::http_server::{start_test_server, NodeState};
 use sonaraim_node::merkle::KeyTransparencyLog;
-use sonaraim_node::p2p::{P2pMeshNode, SignedTreeHead};
+use sonaraim_node::p2p::{sign_tree_head, P2pMeshNode, SignedTreeHead};
 use sonaraim_node::redis_store::RedisRespClient;
 use sonaraim_node::relay::MailboxStore;
 use sonaraim_node::storage::{
@@ -196,17 +196,25 @@ fn http_metrics_endpoint_returns_prometheus_counters_and_persists_wal() {
     let _ = fs::remove_file(&wal_path);
 }
 
+fn sign_tree_head_for_test(node_id: &str, tree_size: usize, root_hash: &str) -> SignedTreeHead {
+    let (signer_pubkey_hex, signature_hex) =
+        sign_tree_head(node_id, tree_size, root_hash, &[7u8; 32]);
+    SignedTreeHead {
+        node_id: node_id.to_string(),
+        tree_size,
+        root_hash: root_hash.to_string(),
+        signer_pubkey_hex,
+        signature_hex,
+    }
+}
+
 #[test]
 fn udp_gossip_nodes_exchange_signed_tree_heads_and_detect_equivocation() {
     let node_a = UdpGossipNode::bind("127.0.0.1:0").expect("bind udp a");
     let node_b = UdpGossipNode::bind("127.0.0.1:0").expect("bind udp b");
     let addr_b = node_b.local_addr().expect("addr b").to_string();
 
-    let sth_valid = SignedTreeHead {
-        node_id: "node-a".to_string(),
-        tree_size: 42,
-        root_hash: "aabbccdd11223344".to_string(),
-    };
+    let sth_valid = sign_tree_head_for_test("node-a", 42, "aabbccdd11223344");
     node_a
         .send_tree_head(&addr_b, &sth_valid)
         .expect("send valid sth");
@@ -225,11 +233,7 @@ fn udp_gossip_nodes_exchange_signed_tree_heads_and_detect_equivocation() {
     let mut mesh_b = P2pMeshNode::new("node-b");
     assert!(mesh_b.accept_tree_head(received_sth).is_ok());
 
-    let sth_conflict = SignedTreeHead {
-        node_id: "node-a".to_string(),
-        tree_size: 42,
-        root_hash: "ff00ff00ff00ff00".to_string(),
-    };
+    let sth_conflict = sign_tree_head_for_test("node-a", 42, "ff00ff00ff00ff00");
     node_a
         .send_tree_head(&addr_b, &sth_conflict)
         .expect("send conflicting sth");
@@ -274,23 +278,31 @@ fn verify_did_web_and_http_p2p_gossip_endpoint_enforces_conflict_check() {
     );
     assert_eq!(st_bad_doc, 400);
 
-    // First SignedTreeHead for tree_size 5 -> 200 OK
-    let (st1, _, body1) = send_http(
-        &addr,
-        "POST",
-        "/v1/p2p/gossip",
-        r#"{"node_id":"peer-01","tree_size":5,"root_hash":"1111aaaa"}"#,
+    // First signed SignedTreeHead for tree_size 5 -> 200 OK
+    let (pub_hex, sig_hex) = sign_tree_head("peer-01", 5, "1111aaaa", &[7u8; 32]);
+    let body1_json = format!(
+        "{{\"node_id\":\"peer-01\",\"tree_size\":5,\"root_hash\":\"1111aaaa\",\"signer_pubkey_hex\":\"{pub_hex}\",\"signature_hex\":\"{sig_hex}\"}}"
     );
+    let (st1, _, body1) = send_http(&addr, "POST", "/v1/p2p/gossip", &body1_json);
     assert_eq!(st1, 200);
     assert!(body1.contains("\"accepted\":true"));
 
-    // Conflicting SignedTreeHead for tree_size 5 -> 409 Conflict
-    let (st2, _, body2) = send_http(
+    // Conflicting signed SignedTreeHead for tree_size 5 -> 409 Conflict
+    let (pub_hex2, sig_hex2) = sign_tree_head("peer-01", 5, "2222bbbb", &[7u8; 32]);
+    let body2_json = format!(
+        "{{\"node_id\":\"peer-01\",\"tree_size\":5,\"root_hash\":\"2222bbbb\",\"signer_pubkey_hex\":\"{pub_hex2}\",\"signature_hex\":\"{sig_hex2}\"}}"
+    );
+    let (st2, _, body2) = send_http(&addr, "POST", "/v1/p2p/gossip", &body2_json);
+    assert_eq!(st2, 409);
+    assert!(body2.contains("EQUIVOCATION_DETECTED"));
+
+    // Forged/unsigned head -> 400 INVALID_SIGNATURE, never recorded
+    let (st3, _, body3) = send_http(
         &addr,
         "POST",
         "/v1/p2p/gossip",
-        r#"{"node_id":"peer-01","tree_size":5,"root_hash":"2222bbbb"}"#,
+        r#"{"node_id":"peer-01","tree_size":6,"root_hash":"3333cccc"}"#,
     );
-    assert_eq!(st2, 409);
-    assert!(body2.contains("EQUIVOCATION_DETECTED"));
+    assert_eq!(st3, 400);
+    assert!(body3.contains("INVALID_SIGNATURE"));
 }

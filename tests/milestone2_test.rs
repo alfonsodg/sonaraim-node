@@ -60,13 +60,17 @@ fn p2p_mesh_syncs_merkle_heads_and_rejects_equivocation() {
         node_id: "node-a".to_string(),
         tree_size: 10,
         root_hash: "aaaa1111".to_string(),
+        signer_pubkey_hex: String::new(),
+        signature_hex: String::new(),
     };
-    assert!(node_b.accept_tree_head(sth1).is_ok());
+    assert!(node_b.accept_tree_head(sth1).is_err());
 
     let equivocating = SignedTreeHead {
         node_id: "node-a".to_string(),
         tree_size: 10,
         root_hash: "bbbb2222".to_string(),
+        signer_pubkey_hex: String::new(),
+        signature_hex: String::new(),
     };
     assert!(node_b.accept_tree_head(equivocating).is_err());
 }
@@ -95,7 +99,8 @@ fn http_server_handles_all_documented_endpoints_and_methods() {
 
     let (st, resolved) = send_http(&addr, "GET", "/v1/identity/did:web:clinic.example.com", "");
     assert_eq!(st, 200);
-    assert!(resolved.contains("\"verified_b2b\":true"));
+    // Without a resolvable did:web document (no network in tests), never verified.
+    assert!(resolved.contains("\"verified_b2b\":false"));
 
     let (st, missing) = send_http(&addr, "GET", "/v1/identity/did:web:unknown.example.com", "");
     assert_eq!(st, 404);
