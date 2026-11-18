@@ -57,7 +57,7 @@ pub fn handle_post_envelope(st: &mut NodeState, body: &str) -> (u16, &'static st
     let wake_up_queued = st.push_signals.record_wake_up(&mbx);
     if !replicated {
         let peers = st.p2p_mesh.peers();
-        crate::http_federation::replicate_envelope_to_peers(&peers, &env_id, &mbx, &payload_hex);
+        crate::federation_client::replicate_envelope_to_peers(&peers, &env_id, &mbx, &payload_hex);
     }
     (
         202,

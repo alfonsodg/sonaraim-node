@@ -57,6 +57,8 @@ pub struct PeerRecord {
     pub rpc_url: String,
     /// QUIC or TCP multiaddress.
     pub multiaddr: String,
+    /// Optional per-peer Bearer token used for replication calls.
+    pub auth_token: Option<String>,
 }
 
 /// Decentralized P2P mesh routing and gossip state for a `sonaraim-node`.
@@ -91,6 +93,7 @@ impl P2pMeshNode {
                 peer_id: peer_id.to_string(),
                 rpc_url: String::new(),
                 multiaddr: multiaddr.to_string(),
+                auth_token: None,
             },
         );
     }

@@ -1,5 +1,6 @@
 //! Multi-node P2P peer registration, catch-up sync, and loop-free replication.
 
+use crate::federation_client::{execute_http_request, extract_peer_auth_token};
 use crate::http_auth::err_json;
 use crate::http_server::{now_secs, NodeState};
 use crate::merkle::{IdentityLogEntry, KeyTransparencyLog};
@@ -7,65 +8,6 @@ use crate::p2p::{PeerRecord, SignedTreeHead};
 use crate::relay::SealedEnvelope;
 use crate::storage::extract_json_str;
 use crate::udp_gossip::{decode_tree_head_json, encode_tree_head_json};
-use std::io::{Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
-use std::time::Duration;
-
-/// Executes a synchronous HTTP request against `url` using std-only [`TcpStream`].
-pub fn execute_http_request(
-    method: &str,
-    url: &str,
-    body: &str,
-    timeout_ms: u64,
-) -> Result<(u16, String), String> {
-    let raw = url
-        .trim_start_matches("http://")
-        .trim_start_matches("https://");
-    let (hp, path) = raw
-        .split_once('/')
-        .map_or((raw, "/".to_string()), |(h, p)| (h, format!("/{p}")));
-    let addr_str = if hp.contains(':') {
-        hp.to_string()
-    } else {
-        format!("{hp}:80")
-    };
-    let dur = Duration::from_millis(timeout_ms.max(50));
-    let mut addrs = addr_str.to_socket_addrs().map_err(|e| e.to_string())?;
-    let addr = addrs
-        .next()
-        .ok_or_else(|| "no address resolved".to_string())?;
-    let mut stream = TcpStream::connect_timeout(&addr, dur).map_err(|e| e.to_string())?;
-    let _ = stream.set_read_timeout(Some(dur));
-    let _ = stream.set_write_timeout(Some(dur));
-
-    let req = format!(
-        "{method} {path} HTTP/1.1\r\nHost: {hp}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-        body.len()
-    );
-    stream
-        .write_all(req.as_bytes())
-        .map_err(|e| e.to_string())?;
-    stream.flush().map_err(|e| e.to_string())?;
-
-    let mut resp = Vec::new();
-    let mut buf = [0u8; 4096];
-    loop {
-        match stream.read(&mut buf) {
-            Ok(0) => break,
-            Ok(n) => resp.extend_from_slice(&buf[..n]),
-            Err(_) => break,
-        }
-    }
-    let text = String::from_utf8_lossy(&resp);
-    let (head, resp_body) = text.split_once("\r\n\r\n").unwrap_or((&text, ""));
-    let status = head
-        .lines()
-        .next()
-        .and_then(|l| l.split_whitespace().nth(1))
-        .and_then(|s| s.parse::<u16>().ok())
-        .unwrap_or(0);
-    Ok((status, resp_body.to_string()))
-}
 
 /// Parses top-level JSON objects from an array named `key` in `raw`.
 #[must_use]
@@ -111,14 +53,18 @@ pub fn handle_post_peers(st: &mut NodeState, body: &str) -> (u16, &'static str, 
     };
     let rpc_url = extract_json_str(body, "rpc_url").unwrap_or_default();
     let multiaddr = extract_json_str(body, "multiaddr").unwrap_or_default();
+    let auth_token = extract_peer_auth_token(body);
     st.p2p_mesh.add_peer_record(PeerRecord {
         peer_id: peer_id.clone(),
         rpc_url: rpc_url.clone(),
         multiaddr,
+        auth_token: auth_token.clone(),
     });
     if !rpc_url.is_empty() {
         let sync_url = format!("{}/v1/p2p/sync", rpc_url.trim_end_matches('/'));
-        if let Ok((200, sync_body)) = execute_http_request("GET", &sync_url, "", 2000) {
+        if let Ok((200, sync_body)) =
+            execute_http_request("GET", &sync_url, "", auth_token.as_deref(), 2000)
+        {
             if let Err(err_resp) = ingest_sync_payload(st, &sync_body) {
                 return err_resp;
             }
@@ -241,49 +187,4 @@ pub fn handle_get_sync(st: &NodeState) -> (u16, &'static str, String) {
             envs.join(",")
         ),
     )
-}
-
-/// Replicates an envelope across all registered peer nodes without looping.
-pub fn replicate_envelope_to_peers(
-    peers: &[PeerRecord],
-    env_id: &str,
-    mbx: &str,
-    payload_hex: &str,
-) {
-    let body = format!(
-        "{{\"envelope_id\":\"{env_id}\",\"recipient_mailbox_id\":\"{mbx}\",\"payload_hex\":\"{payload_hex}\",\"replicated\":true}}"
-    );
-    for peer in peers {
-        if !peer.rpc_url.is_empty() {
-            let url = format!("{}/v1/relay/envelopes", peer.rpc_url.trim_end_matches('/'));
-            let _ = execute_http_request("POST", &url, &body, 1000);
-        }
-    }
-}
-
-/// Replicates an identity binding and new `SignedTreeHead` to registered peers.
-pub fn replicate_identity_to_peers(
-    peers: &[PeerRecord],
-    did: &str,
-    commit: &str,
-    phone_token: Option<&str>,
-    sth: &SignedTreeHead,
-) -> Result<(), String> {
-    let gossip_body = encode_tree_head_json(sth);
-    let p_field = phone_token.map_or_else(String::new, |t| format!(",\"phone_token\":\"{t}\""));
-    let id_body = format!(
-        "{{\"did\":\"{did}\",\"key_commitment\":\"{commit}\"{p_field},\"replicated\":true}}"
-    );
-    for peer in peers {
-        if !peer.rpc_url.is_empty() {
-            let base = peer.rpc_url.trim_end_matches('/');
-            let g_url = format!("{base}/v1/p2p/gossip");
-            if let Ok((409, resp)) = execute_http_request("POST", &g_url, &gossip_body, 1000) {
-                return Err(format!("equivocation on peer {}: {resp}", peer.peer_id));
-            }
-            let id_url = format!("{base}/v1/identity");
-            let _ = execute_http_request("POST", &id_url, &id_body, 1000);
-        }
-    }
-    Ok(())
 }
