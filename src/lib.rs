@@ -7,6 +7,7 @@
 
 pub mod config;
 pub mod crypto;
+pub mod did_web;
 pub mod envelope_wal;
 pub mod federation_client;
 pub mod health;

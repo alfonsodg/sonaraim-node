@@ -343,11 +343,30 @@ fn issue11_multi_node_federation_replication_and_equivocation_detection() {
     assert!(body_mbx_b.contains("env-fed-001"));
     assert!(body_mbx_b.contains("deadbeef42"));
 
-    // 4. Merkle equivocation detection on Node B -> 409 Conflict
-    let equivocation_gossip =
+    // 4. Merkle equivocation detection on Node B -> 409 Conflict.
+    // The gossip head must be signed; an unsigned head is rejected as 400.
+    let unsigned_gossip =
         r#"{"node_id":"node-ent-a","tree_size":1,"root_hash":"conflicting-hash-999"}"#;
-    let (st_equiv, body_equiv) =
-        send_http_with_auth(&addr_b, "POST", "/v1/p2p/gossip", None, equivocation_gossip);
+    let (st_unsigned, body_unsigned) =
+        send_http_with_auth(&addr_b, "POST", "/v1/p2p/gossip", None, unsigned_gossip);
+    assert_eq!(st_unsigned, 400);
+    assert!(body_unsigned.contains("INVALID_SIGNATURE"));
+
+    // A validly signed head for tree_size 1 is accepted (node B observed a
+    // signed head for size 1 via replication), then a conflicting signed head
+    // for the same size is a 409 equivocation.
+    let (sig_pub, sig_hex) =
+        sonaraim_node::p2p::sign_tree_head("node-ent-a", 1, "conflicting-hash-999", &[9u8; 32]);
+    let equivocation_gossip = format!(
+        "{{\"node_id\":\"node-ent-a\",\"tree_size\":1,\"root_hash\":\"conflicting-hash-999\",\"signer_pubkey_hex\":\"{sig_pub}\",\"signature_hex\":\"{sig_hex}\"}}"
+    );
+    let (st_equiv, body_equiv) = send_http_with_auth(
+        &addr_b,
+        "POST",
+        "/v1/p2p/gossip",
+        None,
+        &equivocation_gossip,
+    );
     assert_eq!(st_equiv, 409);
     assert!(body_equiv.contains("EQUIVOCATION_DETECTED"));
 }

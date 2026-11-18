@@ -7,6 +7,10 @@ use std::collections::HashMap;
 use std::fmt;
 
 /// Signed Merkle tree head gossiped across `sonaraim-node` peers.
+///
+/// Carries an Ed25519 signature over the canonical payload
+/// `sonaraim:sth:v1|<node_id>|<tree_size>|<root_hash>`, produced with the
+/// origin node's 32-byte signing seed. Receivers verify before recording.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SignedTreeHead {
     /// Originating peer node identifier.
@@ -15,6 +19,22 @@ pub struct SignedTreeHead {
     pub tree_size: usize,
     /// Hexadecimal Merkle root hash at `tree_size`.
     pub root_hash: String,
+    /// Hex-encoded Ed25519 public key of the signer (64 chars, 32 bytes).
+    pub signer_pubkey_hex: String,
+    /// Hex-encoded Ed25519 signature over the canonical payload (128 chars, 64 bytes).
+    pub signature_hex: String,
+}
+
+impl SignedTreeHead {
+    /// Returns the canonical byte payload covered by [`Self::signature_hex`].
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        format!(
+            "sonaraim:sth:v1|{}|{}|{}",
+            self.node_id, self.tree_size, self.root_hash
+        )
+        .into_bytes()
+    }
 }
 
 /// Errors returned during P2P mesh synchronization.
@@ -29,6 +49,8 @@ pub enum P2pError {
         /// Conflicting newly received root hash.
         conflicting_root: String,
     },
+    /// The STH signature failed verification or was malformed.
+    InvalidSignature(String),
 }
 
 impl fmt::Display for P2pError {
@@ -42,6 +64,7 @@ impl fmt::Display for P2pError {
                 f,
                 "Merkle equivocation at size {tree_size}: {existing_root} != {conflicting_root}"
             ),
+            Self::InvalidSignature(msg) => write!(f, "invalid STH signature: {msg}"),
         }
     }
 }
@@ -118,7 +141,12 @@ impl P2pMeshNode {
     }
 
     /// Validates and records a gossiped [`SignedTreeHead`], rejecting equivocation.
+    ///
+    /// The Ed25519 signature is verified first: heads with a missing, malformed,
+    /// or non-matching signature are rejected with
+    /// [`P2pError::InvalidSignature`] and never recorded.
     pub fn accept_tree_head(&mut self, sth: SignedTreeHead) -> Result<(), P2pError> {
+        verify_tree_head_signature(&sth)?;
         if let Some(existing) = self.observed_heads.get(&sth.tree_size) {
             if existing != &sth.root_hash {
                 return Err(P2pError::EquivocationDetected {
@@ -132,4 +160,73 @@ impl P2pMeshNode {
         }
         Ok(())
     }
+}
+
+/// Decodes an even-length lowercase/uppercase hex string into bytes.
+fn hex_decode(hex: &str) -> Option<Vec<u8>> {
+    if !hex.len().is_multiple_of(2) {
+        return None;
+    }
+    let mut out = Vec::with_capacity(hex.len() / 2);
+    for i in (0..hex.len()).step_by(2) {
+        let byte = u8::from_str_radix(&hex[i..i + 2], 16).ok()?;
+        out.push(byte);
+    }
+    Some(out)
+}
+
+/// Signs the STH canonical payload with a 32-byte Ed25519 seed, returning
+/// `(signer_pubkey_hex, signature_hex)`.
+pub fn sign_tree_head(
+    node_id: &str,
+    tree_size: usize,
+    root_hash: &str,
+    signing_seed: &[u8; 32],
+) -> (String, String) {
+    use ed25519_dalek::Signer;
+    let signing = ed25519_dalek::SigningKey::from_bytes(signing_seed);
+    let payload = format!("sonaraim:sth:v1|{node_id}|{tree_size}|{root_hash}");
+    let signature = signing.sign(payload.as_bytes());
+    (
+        hex_encode(&signing.verifying_key().to_bytes()),
+        hex_encode(&signature.to_bytes()),
+    )
+}
+
+/// Verifies a [`SignedTreeHead`]'s Ed25519 signature over its canonical payload.
+pub fn verify_tree_head_signature(sth: &SignedTreeHead) -> Result<(), P2pError> {
+    use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+    if sth.signer_pubkey_hex.len() != 64 || sth.signature_hex.len() != 128 {
+        return Err(P2pError::InvalidSignature(
+            "missing or malformed signer key/signature".to_string(),
+        ));
+    }
+    let pub_bytes = hex_decode(&sth.signer_pubkey_hex)
+        .ok_or_else(|| P2pError::InvalidSignature("malformed signer key hex".to_string()))?;
+    let sig_bytes = hex_decode(&sth.signature_hex)
+        .ok_or_else(|| P2pError::InvalidSignature("malformed signature hex".to_string()))?;
+    let verifying = VerifyingKey::from_bytes(
+        pub_bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| P2pError::InvalidSignature("signer key wrong length".to_string()))?,
+    )
+    .map_err(|_| P2pError::InvalidSignature("invalid signer public key".to_string()))?;
+    let signature = Signature::from_bytes(
+        sig_bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| P2pError::InvalidSignature("signature wrong length".to_string()))?,
+    );
+    verifying
+        .verify(sth.canonical_bytes().as_slice(), &signature)
+        .map_err(|_| P2pError::InvalidSignature("signature mismatch".to_string()))
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        out.push_str(&format!("{b:02x}"));
+    }
+    out
 }

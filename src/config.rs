@@ -68,6 +68,12 @@ pub struct NodeConfig {
     pub s3_endpoint_url: Option<String>,
     /// Optional AWS region for the SigV4 signing scope (`S3_REGION`).
     pub s3_region: Option<String>,
+    /// Optional 64-hex STH signing seed (`NODE_STH_SIGNING_SEED`).
+    ///
+    /// When unset, a process-local random seed is used (documented in
+    /// `docs/CONFIGURATION.md`): heads still verify within the process but
+    /// peers cannot pin the signer across restarts.
+    pub sth_signing_seed_hex: Option<String>,
 }
 
 impl NodeConfig {
@@ -92,6 +98,7 @@ impl NodeConfig {
             "S3_BUCKET_MEDIA",
             "S3_ENDPOINT_URL",
             "S3_REGION",
+            "NODE_STH_SIGNING_SEED",
         ] {
             if let Ok(val) = env::var(key) {
                 vars.insert(key.to_string(), val);
@@ -173,6 +180,7 @@ impl NodeConfig {
             s3_bucket_media: optional("S3_BUCKET_MEDIA"),
             s3_endpoint_url: optional("S3_ENDPOINT_URL"),
             s3_region: optional("S3_REGION"),
+            sth_signing_seed_hex: optional("NODE_STH_SIGNING_SEED"),
         })
     }
 
@@ -193,6 +201,47 @@ impl NodeConfig {
     #[must_use]
     pub fn http_bind_address(&self) -> String {
         format!("{}:{}", self.http_host, self.http_port)
+    }
+
+    /// Returns the 32-byte Ed25519 seed used to sign gossiped STHs.
+    ///
+    /// Parses `NODE_STH_SIGNING_SEED` as 64 hex chars when set; otherwise a
+    /// process-local random seed is generated (never logged, never persisted).
+    #[must_use]
+    pub fn sth_signing_seed(&self) -> [u8; 32] {
+        if let Some(hex) = self.sth_signing_seed_hex.as_deref() {
+            if let Some(bytes) = Self::decode_hex_32(hex) {
+                return bytes;
+            }
+        }
+        let mut seed = [0u8; 32];
+        getrandom::getrandom(&mut seed).unwrap_or_else(|_| {
+            use std::time::{SystemTime, UNIX_EPOCH};
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0x9e37_79b9_7f4a_7c15, |d| d.subsec_nanos() as u64);
+            // Non-crypto fallback only when the OS RNG is unavailable.
+            let mut x = nanos | 1;
+            for b in seed.iter_mut() {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                *b = (x & 0xff) as u8;
+            }
+        });
+        seed
+    }
+
+    fn decode_hex_32(hex: &str) -> Option<[u8; 32]> {
+        let hex = hex.trim();
+        if hex.len() != 64 {
+            return None;
+        }
+        let mut out = [0u8; 32];
+        for i in 0..32 {
+            out[i] = u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).ok()?;
+        }
+        Some(out)
     }
 
     /// Extracts a non-empty trimmed string value for `key` from `vars`.
