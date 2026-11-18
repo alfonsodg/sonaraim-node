@@ -39,6 +39,7 @@
 | `S3_SECRET_ACCESS_KEY` | `String` | No | S3 secret access key for SigV4 presigning of media uploads. | `miniopassword` |
 | `S3_REGION` | `String` | No | AWS region for the SigV4 signing scope (defaults to `us-east-1`). | `us-east-1` |
 | `NODE_PSI_SERVER_SECRET` | `String` | No | HMAC server secret for PSI token derivation (falls back to `NODE_ID` in dev). | `psi-secret-...` |
+| `NODE_STH_SIGNING_SEED` | `String` | No | 64-hex Ed25519 seed for signing gossiped STHs. Stable per node. **WARNING: when unset, a process-local random seed is generated and the STH signer identity ROTATES ON EVERY RESTART (peers cannot pin the signer across restarts).** Set a stable per-node value in production. | `aabbcc... (64 hex chars)` |
 
 ---
 
@@ -46,8 +47,9 @@
 
 | Variable | Type | Required | Description | Example |
 | :--- | :--- | :--- | :--- | :--- |
-| `NODE_P2P_PORT` | `u16` | No | UDP port exposed for peer-to-peer gossip datagrams. | `9031` |
-| `NODE_BOOTSTRAP_PEERS` | `String` | No | Comma-separated list of bootstrap peer multiaddrs for initial mesh discovery. | `/ip4/10.0.0.2/udp/4001/quic-v1,/ip4/10.0.0.3/udp/4001/quic-v1` |
+| `NODE_BOOTSTRAP_PEERS` | `String` | No | Comma-separated bootstrap peers (`/ip4/<host>/udp/<port>` or `host:port`). Parsed into `NodeConfig.bootstrap_peers` at startup; an unparseable entry fails startup with `ConfigError::InvalidValue` (fail fast, never a silent default). Empty/unset means no bootstrap join. | `/ip4/10.0.0.2/udp/9001,/ip4/10.0.0.3/udp/9001` |
+
+> **Deprecated: `NODE_P2P_PORT`.** This variable was documented in earlier revisions but is not read by any code. The UDP gossip bind address comes exclusively from `NODE_P2P_LISTEN_ADDR` (parsed as `/ip4/<host>/udp/<port>` or `host:port`). Do not set `NODE_P2P_PORT`; it has no effect.
 
 ---
 
@@ -67,4 +69,5 @@ When `NodeConfig::from_env()` or `NodeConfig::from_map()` executes:
 1. Any missing or empty core variable triggers `ConfigError::MissingVariable(name)`.
 2. A non-numeric or zero `NODE_HTTP_PORT` triggers `ConfigError::InvalidValue`.
 3. A non-numeric or zero `NODE_ENVELOPE_TTL_SECONDS` triggers `ConfigError::InvalidValue`.
-4. A `NODE_P2P_LISTEN_ADDR` that does not start with `/` triggers `ConfigError::InvalidValue`.
+4. A `NODE_P2P_LISTEN_ADDR` that does not parse as `/ip4/<host>/udp/<port>` or `host:port` triggers `ConfigError::InvalidValue` (TCP-only multiaddrs are rejected: the gossip daemon only speaks UDP).
+5. A non-empty but unparseable `NODE_BOOTSTRAP_PEERS` entry triggers `ConfigError::InvalidValue` (fail fast at startup, never a silent default).

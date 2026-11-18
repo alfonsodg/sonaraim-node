@@ -84,7 +84,7 @@ Maintains an append-only cryptographic ledger mapping DIDs to public key commitm
 
 Nodes federate over QUIC and UDP to synchronize Merkle tree heads:
 
-- **`UdpGossipNode`**: Binds a non-blocking UDP socket (`NODE_P2P_PORT`) to exchange compact JSON `SignedTreeHead` datagrams.
+- **`UdpGossipNode`**: Binds a non-blocking UDP socket (from `NODE_P2P_LISTEN_ADDR`, parsed as `/ip4/<host>/udp/<port>` or `host:port`) to exchange compact JSON `SignedTreeHead` datagrams. `NODE_BOOTSTRAP_PEERS` entries receive an immediate hello head at startup.
 - **Equivocation Detection**: If a peer advertises two conflicting tree heads for the same tree size, an equivocation alert is raised and the peer is flagged as untrusted.
 
 ### 3.5 Private Set Intersection Service (`src/psi_service.rs`)

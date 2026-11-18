@@ -9,6 +9,7 @@
 //! on-change announcement whenever the head differs from the last broadcast.
 //! `NODE_BOOTSTRAP_PEERS` entries receive an immediate hello head at startup.
 
+use crate::config::parse_udp_peer_addr;
 use crate::http_server::NodeState;
 use crate::p2p::{sign_tree_head, SignedTreeHead};
 use crate::udp_gossip::UdpGossipNode;
@@ -21,7 +22,10 @@ pub const GOSSIP_BROADCAST_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Parses a comma-separated `NODE_BOOTSTRAP_PEERS` value into UDP `host:port`
 /// targets, accepting `/ip4/<host>/udp/<port>/...` multiaddrs and bare
-/// `host:port` strings. Unparseable entries are skipped with an error log.
+/// `host:port` strings. Kept for compatibility; [`NodeConfig`] now parses
+/// and validates this variable at startup (fail fast), so prefer reading
+/// `config.bootstrap_peers`. Entries that fail to parse are still skipped
+/// here with an error log for defensive use on already-validated input.
 #[must_use]
 pub fn parse_udp_bootstrap_peers(raw: &str) -> Vec<String> {
     raw.split(',')
@@ -29,40 +33,11 @@ pub fn parse_udp_bootstrap_peers(raw: &str) -> Vec<String> {
         .collect()
 }
 
-/// Parses one bootstrap entry into a UDP `host:port` target.
-fn parse_udp_peer_addr(entry: &str) -> Option<String> {
-    if entry.is_empty() {
-        return None;
-    }
-    if let Some(rest) = entry.strip_prefix("/ip4/") {
-        let mut parts = rest.split('/');
-        let host = parts.next().filter(|h| !h.is_empty())?;
-        for part in parts.by_ref() {
-            if part == "udp" {
-                let port = parts.next().filter(|p| !p.is_empty())?;
-                if port.parse::<u16>().is_err() {
-                    log_error(&format!("ignoring bootstrap peer with bad port: {entry}"));
-                    return None;
-                }
-                return Some(format!("{host}:{port}"));
-            }
-        }
-        log_error(&format!(
-            "ignoring bootstrap peer without udp part: {entry}"
-        ));
-        return None;
-    }
-    if entry.contains(':') && !entry.contains('/') {
-        return Some(entry.to_string());
-    }
-    log_error(&format!("ignoring unparseable bootstrap peer: {entry}"));
-    None
-}
-
 /// Resolves the UDP bind address from `NODE_P2P_LISTEN_ADDR`.
 ///
 /// Accepts `/ip4/<host>/udp/<port>/...` multiaddrs (port `0` allowed for
-/// ephemeral binds) and bare `host:port` strings.
+/// ephemeral binds) and bare `host:port` strings. TCP-only multiaddrs return
+/// `None`.
 pub fn udp_bind_addr_from_listen_addr(listen_addr: &str) -> Option<String> {
     parse_udp_peer_addr(listen_addr.trim())
 }
@@ -117,25 +92,36 @@ pub fn spawn_gossip_daemon_with_peers(
         let st = shared
             .lock()
             .map_err(|_| std::io::Error::other("gossip daemon: lock poisoned"))?;
-        udp_bind_addr_from_listen_addr(&st.config.p2p_listen_addr).ok_or_else(|| {
+        let listen = st.config.p2p_listen_addr.clone();
+        let bootstrap = st.config.bootstrap_peers.clone();
+        let parsed = udp_bind_addr_from_listen_addr(&listen);
+        // Bootstrap peers were validated at config load; re-seed from the
+        // validated config value (never re-read the raw env here).
+        let mut seeds: Vec<String> = bootstrap;
+        for peer in extra_udp_peers {
+            if !seeds.contains(peer) {
+                seeds.push(peer.clone());
+            }
+        }
+        let bind = parsed.ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                "gossip daemon: unparseable NODE_P2P_LISTEN_ADDR",
+                format!(
+                    "gossip bind failed on {listen}: expected /ip4/<host>/udp/<port> or host:port"
+                ),
             )
-        })?
+        })?;
+        (bind, seeds)
     };
-    let node = UdpGossipNode::bind(&bind_addr)?;
+    let (bind_addr, bootstrap) = bind_addr;
+    let node = UdpGossipNode::bind(&bind_addr).map_err(|e| {
+        std::io::Error::new(
+            e.kind(),
+            format!("gossip bind failed on {bind_addr}: expected /ip4/<host>/udp/<port> or host:port ({e})"),
+        )
+    })?;
     node.socket_set_broadcast()?;
     let local = node.local_addr()?.to_string();
-    let mut bootstrap: Vec<String> = std::env::var("NODE_BOOTSTRAP_PEERS")
-        .ok()
-        .map(|raw| parse_udp_bootstrap_peers(&raw))
-        .unwrap_or_default();
-    for peer in extra_udp_peers {
-        if !bootstrap.contains(peer) {
-            bootstrap.push(peer.clone());
-        }
-    }
     let handle = thread::spawn(move || {
         run_gossip_loop(node, shared, bootstrap);
     });

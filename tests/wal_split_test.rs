@@ -47,6 +47,39 @@ fn send_http(addr: &str, method: &str, path: &str, body: &str) -> (u16, String) 
 }
 
 #[test]
+fn issue20_identity_post_appends_binding_to_identity_wal() {
+    use sonaraim_node::storage::{load_wal_entries, wal_path_from_signing_key};
+
+    let dir = std::env::temp_dir().join(format!("sonaraim-idwal20-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let signing_key = dir.join("node-signing.key");
+    let identity_wal = wal_path_from_signing_key(&signing_key.to_string_lossy());
+
+    let state = NodeState::with_wal_and_redis(
+        dev_config(),
+        MailboxStore::new(3600),
+        KeyTransparencyLog::default(),
+        Some(identity_wal.clone()),
+        None,
+    );
+    let (addr, _handle) = start_test_server(state).expect("start server");
+    let (st, _) = send_http(
+        &addr,
+        "POST",
+        "/v1/identity",
+        r#"{"did":"did:sonaraim:walguard","key_commitment":"ed25519_walguard_01"}"#,
+    );
+    assert_eq!(st, 201);
+
+    let entries = load_wal_entries(&identity_wal).expect("load identity wal");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].did, "did:sonaraim:walguard");
+    assert_eq!(entries[0].key_commitment, "ed25519_walguard_01");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn issue16_ack_compaction_restart_keeps_identities_and_envelopes() {
     use sonaraim_node::envelope_wal::envelope_wal_path_from_identity_wal;
     use sonaraim_node::storage::wal_path_from_signing_key;

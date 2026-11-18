@@ -9,3 +9,11 @@ p2p_listen_addr = "${NODE_P2P_LISTEN_ADDR}"
 
 [relay]
 envelope_ttl_seconds = "${NODE_ENVELOPE_TTL_SECONDS}"
+
+# Optional gossip seeds: comma-separated /ip4/<host>/udp/<port> or host:port.
+# (bootstrap_peers = "${NODE_BOOTSTRAP_PEERS}")
+#
+# Optional 64-hex STH signing seed, stable per node.
+# WARNING: when NODE_STH_SIGNING_SEED is unset, a process-local random seed is
+# generated and the STH signer identity ROTATES ON EVERY RESTART.
+# (sth_signing_seed_hex = "${NODE_STH_SIGNING_SEED}")

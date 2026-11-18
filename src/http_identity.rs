@@ -91,7 +91,11 @@ pub fn handle_post_identity(st: &mut NodeState, body: &str) -> (u16, &'static st
                     key_commitment: commit.clone(),
                     epoch_secs: epoch,
                 };
-                let _ = append_wal_entry(wal, &entry);
+                if let Err(e) = append_wal_entry(wal, &entry) {
+                    eprintln!(
+                        "{{\"level\":\"ERROR\",\"msg\":\"identity wal append failed\",\"error\":\"{e}\"}}"
+                    );
+                }
             }
             let leaf_hash = KeyTransparencyLog::hash_leaf(index, &did, &commit, epoch);
             if !replicated {

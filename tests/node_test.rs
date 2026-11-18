@@ -15,7 +15,7 @@ fn sample_env_map() -> HashMap<String, String> {
     map.insert("NODE_HTTP_PORT".to_string(), "8040".to_string());
     map.insert(
         "NODE_P2P_LISTEN_ADDR".to_string(),
-        "/ip4/0.0.0.0/tcp/4001".to_string(),
+        "/ip4/0.0.0.0/udp/9001".to_string(),
     );
     map.insert(
         "NODE_ENVELOPE_TTL_SECONDS".to_string(),
@@ -31,6 +31,7 @@ fn test_node_config_valid_and_missing_vars() {
     assert_eq!(cfg.node_id, "node-eu-west-01");
     assert_eq!(cfg.http_bind_address(), "127.0.0.1:8040");
     assert_eq!(cfg.envelope_ttl_seconds, 604_800);
+    assert!(cfg.bootstrap_peers.is_empty());
 
     let mut missing = map.clone();
     missing.remove("NODE_HTTP_PORT");
@@ -39,13 +40,52 @@ fn test_node_config_valid_and_missing_vars() {
         Err(ConfigError::MissingVariable("NODE_HTTP_PORT".to_string()))
     );
 
-    let mut bad_multiaddr = map;
+    let mut bad_multiaddr = map.clone();
     bad_multiaddr.insert(
         "NODE_P2P_LISTEN_ADDR".to_string(),
         "invalid-multiaddr".to_string(),
     );
     assert!(matches!(
         NodeConfig::from_map(&bad_multiaddr),
+        Err(ConfigError::InvalidValue { .. })
+    ));
+
+    // TCP-only multiaddrs are rejected: the gossip daemon only speaks UDP.
+    let mut tcp_only = map.clone();
+    tcp_only.insert(
+        "NODE_P2P_LISTEN_ADDR".to_string(),
+        "/ip4/0.0.0.0/tcp/4001".to_string(),
+    );
+    assert_eq!(
+        NodeConfig::from_map(&tcp_only),
+        Err(ConfigError::InvalidValue {
+            key: "NODE_P2P_LISTEN_ADDR".to_string(),
+            reason: "unparseable gossip listen address: expected /ip4/<host>/udp/<port> or host:port (TCP multiaddrs are not supported by the UDP gossip daemon)".to_string(),
+        })
+    );
+}
+
+#[test]
+fn test_node_config_bootstrap_peers_parsed_and_validated() {
+    let mut map = sample_env_map();
+    map.insert(
+        "NODE_BOOTSTRAP_PEERS".to_string(),
+        "/ip4/10.0.0.2/udp/9001, 127.0.0.1:9002".to_string(),
+    );
+    let cfg = NodeConfig::from_map(&map).expect("valid bootstrap peers should parse");
+    assert_eq!(
+        cfg.bootstrap_peers,
+        vec!["10.0.0.2:9001".to_string(), "127.0.0.1:9002".to_string()]
+    );
+
+    // An unparseable entry fails startup (fail fast, never a silent default).
+    let mut bad = sample_env_map();
+    bad.insert(
+        "NODE_BOOTSTRAP_PEERS".to_string(),
+        "/ip4/10.0.0.2/udp/9001, garbage!!".to_string(),
+    );
+    assert!(matches!(
+        NodeConfig::from_map(&bad),
         Err(ConfigError::InvalidValue { .. })
     ));
 }
