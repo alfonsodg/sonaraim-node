@@ -45,7 +45,9 @@ pub struct NodeConfig {
     pub http_host: String,
     /// TCP port for the HTTP `/health` endpoint.
     pub http_port: u16,
-    /// Multiaddr where the P2P transport listens.
+    /// UDP gossip listen address: `/ip4/<host>/udp/<port>/...` multiaddr or
+    /// `host:port` (port `0` allowed for ephemeral binds). Backs the live
+    /// gossip daemon thread (see `gossip_daemon`).
     pub p2p_listen_addr: String,
     /// Time-to-live in seconds for queued sealed envelopes.
     pub envelope_ttl_seconds: u64,

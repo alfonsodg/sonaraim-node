@@ -27,6 +27,15 @@ impl UdpGossipNode {
         Ok(Self { socket })
     }
 
+    /// Enables broadcast on the underlying socket (used by the gossip daemon).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`io::Error`] if the socket option cannot be set.
+    pub fn socket_set_broadcast(&self) -> io::Result<()> {
+        self.socket.set_broadcast(true)
+    }
+
     /// Returns the local [`SocketAddr`] to which this UDP node is bound.
     ///
     /// # Errors
