@@ -145,7 +145,7 @@ fn issue8_percent_decoded_did_paths_and_bearer_auth_gate_on_writes() {
 
 #[test]
 fn issue9_s3_object_upload_and_wal_compaction() {
-    use sonaraim_node::s3_wal_maintenance::{compact_wal_file, put_s3_object_http};
+    use sonaraim_node::s3_wal_maintenance::{compact_wal_file_legacy, put_s3_object_http};
     use std::net::TcpListener;
     use std::thread;
 
@@ -171,7 +171,8 @@ fn issue9_s3_object_upload_and_wal_compaction() {
             "05060708".to_string(),
         ),
     ];
-    let written = compact_wal_file(&wal_path, &active_entries).expect("compact wal");
+    let written =
+        compact_wal_file_legacy(&wal_path, &active_entries, 1_700_000_000).expect("compact wal");
     assert_eq!(written, 2);
 
     let compacted = std::fs::read_to_string(&wal_path).expect("read compacted wal");

@@ -1,5 +1,6 @@
 //! HTTP handlers for relay envelopes and mailbox queues.
 
+use crate::envelope_wal::{append_envelope_wal_entry, EnvelopeWalEntry};
 use crate::http_auth::err_json;
 use crate::http_server::{now_secs, NodeState};
 use crate::push_signals::{EphemeralSignal, PushPlatform, SignalType};
@@ -37,6 +38,19 @@ pub fn handle_post_envelope(st: &mut NodeState, body: &str) -> (u16, &'static st
         ciphertext: payload_hex.as_bytes().to_vec(),
         created_at_epoch_secs: now_secs(),
     });
+    if let Some(ref envelope_wal) = st.envelope_wal_path {
+        let entry = EnvelopeWalEntry {
+            envelope_id: env_id.clone(),
+            recipient_mailbox_id: mbx.clone(),
+            payload_hex: payload_hex.clone(),
+            created_at_epoch_secs: now_secs(),
+        };
+        if let Err(e) = append_envelope_wal_entry(envelope_wal, &entry) {
+            eprintln!(
+                "{{\"level\":\"ERROR\",\"msg\":\"envelope wal append failed\",\"error\":\"{e}\"}}"
+            );
+        }
+    }
     let wake_up_queued = st.push_signals.record_wake_up(&mbx);
     if !replicated {
         let peers = st.p2p_mesh.peers();
@@ -184,11 +198,29 @@ pub fn handle_ack_mailbox(
     let ids = extract_json_str_array(body, "envelope_ids");
     let acked = st.relay.ack(mailbox_id, &ids);
     if let Some(ref redis) = st.redis {
-        let _ = redis.del(&format!("sonaraim:mbx:{mailbox_id}"));
+        if let Err(e) = redis.del(&format!("sonaraim:mbx:{mailbox_id}")) {
+            st.redis_last_error = Some(e.to_string());
+            eprintln!(
+                "{{\"level\":\"ERROR\",\"msg\":\"redis DEL failed\",\"error\":\"{}\"}}",
+                st.redis_last_error.as_deref().unwrap_or("unknown")
+            );
+        }
     }
-    if let Some(ref wal) = st.wal_path {
-        let active = st.relay.all_active_tuples(now_secs());
-        let _ = compact_wal_file(wal, &active);
+    // Ack compaction rewrites only the envelope WAL; the identity WAL is
+    // never touched by mailbox operations (one file, one schema).
+    if let Some(ref envelope_wal) = st.envelope_wal_path {
+        let mut active: Vec<(String, String, String, u64)> = Vec::new();
+        for env in st.relay.all_active_envelopes(now_secs()) {
+            active.push((
+                env.envelope_id,
+                env.recipient_mailbox_id,
+                String::from_utf8_lossy(&env.ciphertext).to_string(),
+                env.created_at_epoch_secs,
+            ));
+        }
+        if let Err(e) = compact_wal_file(envelope_wal, &active) {
+            eprintln!("{{\"level\":\"ERROR\",\"msg\":\"envelope wal compaction failed\",\"error\":\"{e}\"}}");
+        }
     }
     (
         200,

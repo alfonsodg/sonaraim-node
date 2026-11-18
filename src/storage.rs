@@ -91,7 +91,9 @@ pub fn append_wal_entry(wal_path: &Path, entry: &WalEntry) -> Result<(), Storage
         .map_err(|e| StorageError::Io(e.to_string()))?;
     file.write_all(entry.to_json_line().as_bytes())
         .map_err(|e| StorageError::Io(e.to_string()))?;
-    file.flush().map_err(|e| StorageError::Io(e.to_string()))
+    file.flush().map_err(|e| StorageError::Io(e.to_string()))?;
+    // fsync before acknowledging the write so a crash cannot lose the record.
+    file.sync_all().map_err(|e| StorageError::Io(e.to_string()))
 }
 
 /// Loads all [`WalEntry`] records from `wal_path`. Returns an empty vector if the file does not exist.
@@ -110,6 +112,10 @@ pub fn load_wal_entries(wal_path: &Path) -> Result<Vec<WalEntry>, StorageError> 
 }
 
 /// Replays WAL entries from `wal_path` into `kt_log` and returns the populated `did_index`.
+///
+/// Malformed identity lines are skipped with an error log instead of discarding
+/// the entire identity log: a foreign-domain record in the file must never wipe
+/// registered DIDs on restart.
 #[must_use]
 pub fn replay_wal_into_log(
     wal_path: Option<&Path>,
@@ -119,24 +125,48 @@ pub fn replay_wal_into_log(
     let Some(path) = wal_path else {
         return did_index;
     };
-    for item in load_wal_entries(path).unwrap_or_default() {
-        if let Ok((idx, _)) = kt_log.append(&item.did, &item.key_commitment, item.epoch_secs) {
-            let leaf_hash = KeyTransparencyLog::hash_leaf(
-                idx,
-                &item.did,
-                &item.key_commitment,
-                item.epoch_secs,
+    if !path.exists() {
+        return did_index;
+    }
+    let raw = match fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(e) => {
+            eprintln!(
+                "{{\"level\":\"ERROR\",\"msg\":\"identity wal replay failed\",\"error\":\"{e}\"}}"
             );
-            did_index.insert(
-                item.did.clone(),
-                IdentityLogEntry {
-                    index: idx,
-                    did: item.did,
-                    key_commitment: item.key_commitment,
-                    epoch_secs: item.epoch_secs,
-                    leaf_hash,
-                },
-            );
+            return did_index;
+        }
+    };
+    for line in raw.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        match WalEntry::from_json_line(line) {
+            Ok(item) => {
+                if let Ok((idx, _)) =
+                    kt_log.append(&item.did, &item.key_commitment, item.epoch_secs)
+                {
+                    let leaf_hash = KeyTransparencyLog::hash_leaf(
+                        idx,
+                        &item.did,
+                        &item.key_commitment,
+                        item.epoch_secs,
+                    );
+                    did_index.insert(
+                        item.did.clone(),
+                        IdentityLogEntry {
+                            index: idx,
+                            did: item.did,
+                            key_commitment: item.key_commitment,
+                            epoch_secs: item.epoch_secs,
+                            leaf_hash,
+                        },
+                    );
+                }
+            }
+            Err(e) => {
+                eprintln!("{{\"level\":\"ERROR\",\"msg\":\"skipping malformed identity wal line\",\"error\":\"{e}\"}}");
+            }
         }
     }
     did_index

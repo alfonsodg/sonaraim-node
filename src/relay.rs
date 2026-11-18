@@ -112,6 +112,8 @@ impl MailboxStore {
     }
 
     /// Returns active `(envelope_id, recipient_mailbox_id, payload_hex)` tuples across all queues.
+    ///
+    /// Prefer [`MailboxStore::all_active_envelopes`] when the epoch timestamp is needed.
     #[must_use]
     pub fn all_active_tuples(&self, now_epoch_secs: u64) -> Vec<(String, String, String)> {
         let ttl = self.ttl_seconds;
@@ -124,6 +126,21 @@ impl MailboxStore {
                         env.recipient_mailbox_id.clone(),
                         String::from_utf8_lossy(&env.ciphertext).to_string(),
                     ));
+                }
+            }
+        }
+        out
+    }
+
+    /// Returns all active non-expired [`SealedEnvelope`] items across queues.
+    #[must_use]
+    pub fn all_active_envelopes(&self, now_epoch_secs: u64) -> Vec<SealedEnvelope> {
+        let ttl = self.ttl_seconds;
+        let mut out = Vec::new();
+        for list in self.queues.values() {
+            for env in list {
+                if !env.is_expired(ttl, now_epoch_secs) {
+                    out.push(env.clone());
                 }
             }
         }

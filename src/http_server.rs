@@ -1,6 +1,7 @@
 //! Lightweight std-only HTTP/1.1 REST server for `sonaraim-node`.
 
 use crate::config::NodeConfig;
+use crate::envelope_wal::{envelope_wal_path_from_identity_wal, replay_envelope_wal_into_relay};
 use crate::health::HealthStatus;
 use crate::http_auth::{
     authorize_write_request, err_json, is_protected_write_route, parse_http_request,
@@ -39,8 +40,10 @@ pub struct NodeState {
     pub phone_index: HashMap<String, String>,
     pub p2p_mesh: P2pMeshNode,
     pub wal_path: Option<PathBuf>,
+    pub envelope_wal_path: Option<PathBuf>,
     pub redis: Option<RedisRespClient>,
     pub push_signals: PushSignalRegistry,
+    pub redis_last_error: Option<String>,
 }
 
 impl NodeState {
@@ -67,6 +70,10 @@ impl NodeState {
         redis: Option<RedisRespClient>,
     ) -> Self {
         let did_index = replay_wal_into_log(wal_path.as_deref(), &mut kt_log);
+        let envelope_wal_path = wal_path.as_deref().map(envelope_wal_path_from_identity_wal);
+        let mut relay = relay;
+        let now = now_secs();
+        replay_envelope_wal_into_relay(&mut relay, envelope_wal_path.as_deref(), now);
         let p2p_mesh = P2pMeshNode::new(&config.node_id);
         Self {
             config,
@@ -76,8 +83,10 @@ impl NodeState {
             phone_index: HashMap::new(),
             p2p_mesh,
             wal_path,
+            envelope_wal_path,
             redis,
             push_signals: PushSignalRegistry::new(),
+            redis_last_error: None,
         }
     }
 }
