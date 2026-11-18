@@ -54,6 +54,20 @@ pub struct NodeConfig {
     /// Explicit development/test opt-in allowing unauthenticated write routes when
     /// `NODE_API_AUTH_TOKEN` is unset (`NODE_ALLOW_DEV_NOAUTH=true`).
     pub allow_unauthenticated_dev: bool,
+    /// Optional HMAC server secret for PSI token derivation (`NODE_PSI_SERVER_SECRET`).
+    ///
+    /// When unset, PSI derivation falls back to the node ID (dev-grade blinding).
+    pub psi_server_secret: Option<String>,
+    /// Optional S3 access key ID for SigV4 presigning (`S3_ACCESS_KEY_ID`).
+    pub s3_access_key_id: Option<String>,
+    /// Optional S3 secret access key for SigV4 presigning (`S3_SECRET_ACCESS_KEY`).
+    pub s3_secret_access_key: Option<String>,
+    /// Optional S3 bucket for media presigning (`S3_BUCKET_MEDIA`).
+    pub s3_bucket_media: Option<String>,
+    /// Optional S3 endpoint URL for presigning (`S3_ENDPOINT_URL`).
+    pub s3_endpoint_url: Option<String>,
+    /// Optional AWS region for the SigV4 signing scope (`S3_REGION`).
+    pub s3_region: Option<String>,
 }
 
 impl NodeConfig {
@@ -72,6 +86,12 @@ impl NodeConfig {
             "NODE_ENVELOPE_TTL_SECONDS",
             "NODE_API_AUTH_TOKEN",
             "NODE_ALLOW_DEV_NOAUTH",
+            "NODE_PSI_SERVER_SECRET",
+            "S3_ACCESS_KEY_ID",
+            "S3_SECRET_ACCESS_KEY",
+            "S3_BUCKET_MEDIA",
+            "S3_ENDPOINT_URL",
+            "S3_REGION",
         ] {
             if let Ok(val) = env::var(key) {
                 vars.insert(key.to_string(), val);
@@ -133,6 +153,12 @@ impl NodeConfig {
 
         let allow_unauthenticated_dev = Self::parse_optional_bool(vars, "NODE_ALLOW_DEV_NOAUTH")?;
 
+        let optional = |key: &str| {
+            vars.get(key)
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        };
+
         Ok(Self {
             node_id,
             http_host,
@@ -141,7 +167,26 @@ impl NodeConfig {
             envelope_ttl_seconds,
             api_auth_token,
             allow_unauthenticated_dev,
+            psi_server_secret: optional("NODE_PSI_SERVER_SECRET"),
+            s3_access_key_id: optional("S3_ACCESS_KEY_ID"),
+            s3_secret_access_key: optional("S3_SECRET_ACCESS_KEY"),
+            s3_bucket_media: optional("S3_BUCKET_MEDIA"),
+            s3_endpoint_url: optional("S3_ENDPOINT_URL"),
+            s3_region: optional("S3_REGION"),
         })
+    }
+
+    /// Returns the HMAC server secret used for PSI token derivation.
+    ///
+    /// Prefers the configured `NODE_PSI_SERVER_SECRET`; falls back to the node
+    /// ID bytes (dev-grade blinding, documented in `docs/CONFIGURATION.md`).
+    #[must_use]
+    pub fn psi_secret_bytes(&self) -> Vec<u8> {
+        self.psi_server_secret
+            .as_deref()
+            .map(str::as_bytes)
+            .unwrap_or_else(|| self.node_id.as_bytes())
+            .to_vec()
     }
 
     /// Formats the HTTP bind socket string (`<http_host>:<http_port>`).

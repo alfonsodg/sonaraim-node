@@ -167,11 +167,8 @@ fn ingest_sync_payload(
                         },
                     );
                     if let Some(pt) = extract_json_str(&obj, "phone_token") {
-                        let eval = crate::psi_service::evaluate_psi_single(
-                            &pt,
-                            st.config.node_id.as_bytes(),
-                        );
-                        st.phone_index.insert(pt.clone(), did.clone());
+                        let secret = st.config.psi_secret_bytes();
+                        let eval = crate::psi_service::evaluate_psi_single(&pt, &secret);
                         st.phone_index.insert(eval, did);
                     }
                 }

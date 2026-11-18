@@ -9,9 +9,10 @@ use sonaraim_node::config::NodeConfig;
 use sonaraim_node::http_server::{start_test_server, NodeState};
 use sonaraim_node::merkle::KeyTransparencyLog;
 use sonaraim_node::p2p::{P2pMeshNode, SignedTreeHead};
-use sonaraim_node::psi_service::{build_l2_anchor_receipt, evaluate_psi_batch};
+use sonaraim_node::psi_service::build_l2_anchor_receipt;
+use sonaraim_node::psi_service::evaluate_psi_batch;
 use sonaraim_node::relay::MailboxStore;
-use sonaraim_node::storage::{generate_s3_presigned_url, NodeSnapshot};
+use sonaraim_node::storage::NodeSnapshot;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -113,14 +114,15 @@ fn http_server_handles_all_documented_endpoints_and_methods() {
     assert_eq!(st, 200);
     assert!(drained.contains("env-1"));
 
-    let (st, presign) = send_http(
+    // Without S3 credentials the presign endpoint fails honestly (no forged signature).
+    let (st, presign_missing) = send_http(
         &addr,
         "POST",
         "/v1/media/presign",
         r#"{"content_length":1024,"sha256_ciphertext":"deadbeef"}"#,
     );
-    assert_eq!(st, 200);
-    assert!(presign.contains("presigned_url"));
+    assert_eq!(st, 400);
+    assert!(presign_missing.contains("MISSING_S3_CREDENTIALS"));
 
     let (st, psi_resp) = send_http(
         &addr,
@@ -139,7 +141,8 @@ fn http_server_handles_all_documented_endpoints_and_methods() {
 }
 
 #[test]
-fn durable_snapshot_and_s3_presign_and_psi_work_deterministically() {
+fn durable_snapshot_and_sigv4_presign_and_psi_work_deterministically() {
+    use sonaraim_node::psi_service::generate_sigv4_presigned_put_url;
     let mut log = KeyTransparencyLog::default();
     log.append("did:sonaraim:alice", "pk-alice", 1_700_000_000)
         .expect("append");
@@ -148,9 +151,20 @@ fn durable_snapshot_and_s3_presign_and_psi_work_deterministically() {
     let restored = NodeSnapshot::from_json_lines(&encoded).expect("restore");
     assert_eq!(restored.tree_head, log.tree_head());
 
-    let url =
-        generate_s3_presigned_url("https://s3.example.com", "sonaraim-media", "deadbeef", 1024);
-    assert!(url.starts_with("https://s3.example.com/sonaraim-media/deadbeef?sig="));
+    let url = generate_sigv4_presigned_put_url(
+        "https://s3.example.com",
+        "sonaraim-media",
+        "deadbeef",
+        1024,
+        "us-east-1",
+        "AKIDEXAMPLE",
+        "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+        1_700_000_000,
+        900,
+    );
+    assert!(url.starts_with("https://s3.example.com/sonaraim-media/deadbeef?"));
+    assert!(url.contains("X-Amz-Algorithm=AWS4-HMAC-SHA256"));
+    assert!(url.contains("X-Amz-Signature="));
 
     let eval = evaluate_psi_batch(&["blind-1".to_string()], b"secret-key");
     assert_eq!(eval.len(), 1);

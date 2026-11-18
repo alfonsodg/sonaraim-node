@@ -16,7 +16,9 @@ use crate::http_relay::{
 };
 use crate::merkle::{IdentityLogEntry, KeyTransparencyLog};
 use crate::p2p::P2pMeshNode;
-use crate::psi_service::{build_l2_anchor_receipt, handle_presign_json, handle_psi_json};
+use crate::psi_service::{
+    build_l2_anchor_receipt, handle_presign_json, handle_psi_json, PresignParams,
+};
 use crate::push_signals::PushSignalRegistry;
 use crate::redis_store::RedisRespClient;
 use crate::relay::MailboxStore;
@@ -219,9 +221,23 @@ fn dispatch(
             let mbx = &p["/v1/relay/mailboxes/".len()..];
             handle_get_mailbox(&mut st, mbx)
         }
-        ("POST", "/v1/media/presign") => handle_presign_json(body),
+        ("POST", "/v1/media/presign") => {
+            let params = PresignParams {
+                endpoint_url: st.config.s3_endpoint_url.as_deref().unwrap_or(""),
+                bucket: st.config.s3_bucket_media.as_deref().unwrap_or(""),
+                sha256_ciphertext: "",
+                content_length: 0,
+                region: st.config.s3_region.as_deref().unwrap_or("us-east-1"),
+                access_key_id: st.config.s3_access_key_id.as_deref(),
+                secret_access_key: st.config.s3_secret_access_key.as_deref(),
+                request_epoch_secs: now_secs(),
+                expires_secs: 900,
+            };
+            handle_presign_json(body, &params)
+        }
         ("POST", "/v1/contacts/psi") => {
-            handle_psi_json(body, st.config.node_id.as_bytes(), &st.phone_index)
+            let secret = st.config.psi_secret_bytes();
+            handle_psi_json(body, &secret, &st.phone_index)
         }
         _ => (
             404,

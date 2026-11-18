@@ -6,6 +6,7 @@
 //! PSI blind service, HTTP auth/routing helpers, HTTP REST server, and health status serializer.
 
 pub mod config;
+pub mod crypto;
 pub mod envelope_wal;
 pub mod health;
 pub mod http_auth;
