@@ -47,8 +47,14 @@ pub struct NodeConfig {
     pub http_port: u16,
     /// UDP gossip listen address: `/ip4/<host>/udp/<port>/...` multiaddr or
     /// `host:port` (port `0` allowed for ephemeral binds). Backs the live
-    /// gossip daemon thread (see `gossip_daemon`).
+    /// gossip daemon thread (see `gossip_daemon`). TCP multiaddrs are rejected:
+    /// the daemon only speaks UDP.
     pub p2p_listen_addr: String,
+    /// Parsed UDP `host:port` bootstrap targets from `NODE_BOOTSTRAP_PEERS`.
+    ///
+    /// Empty when unset. Unparseable entries fail startup with
+    /// [`ConfigError::InvalidValue`] (fail fast, never a silent default).
+    pub bootstrap_peers: Vec<String>,
     /// Time-to-live in seconds for queued sealed envelopes.
     pub envelope_ttl_seconds: u64,
     /// Optional operator/relay Bearer token for write endpoints (`NODE_API_AUTH_TOKEN`).
@@ -101,6 +107,7 @@ impl NodeConfig {
             "S3_ENDPOINT_URL",
             "S3_REGION",
             "NODE_STH_SIGNING_SEED",
+            "NODE_BOOTSTRAP_PEERS",
         ] {
             if let Ok(val) = env::var(key) {
                 vars.insert(key.to_string(), val);
@@ -134,10 +141,10 @@ impl NodeConfig {
             });
         }
 
-        if !p2p_listen_addr.starts_with('/') {
+        if parse_udp_peer_addr(&p2p_listen_addr).is_none() {
             return Err(ConfigError::InvalidValue {
                 key: "NODE_P2P_LISTEN_ADDR".to_string(),
-                reason: "must be a valid multiaddr starting with '/'".to_string(),
+                reason: "unparseable gossip listen address: expected /ip4/<host>/udp/<port> or host:port (TCP multiaddrs are not supported by the UDP gossip daemon)".to_string(),
             });
         }
 
@@ -168,11 +175,18 @@ impl NodeConfig {
                 .filter(|s| !s.is_empty())
         };
 
+        let bootstrap_peers = Self::parse_bootstrap_peers(
+            vars.get("NODE_BOOTSTRAP_PEERS")
+                .map(String::as_str)
+                .unwrap_or(""),
+        )?;
+
         Ok(Self {
             node_id,
             http_host,
             http_port,
             p2p_listen_addr,
+            bootstrap_peers,
             envelope_ttl_seconds,
             api_auth_token,
             allow_unauthenticated_dev,
@@ -254,6 +268,28 @@ impl NodeConfig {
         }
     }
 
+    /// Parses a comma-separated `NODE_BOOTSTRAP_PEERS` value into UDP
+    /// `host:port` targets. Accepts `/ip4/<host>/udp/<port>/...` multiaddrs
+    /// and bare `host:port` strings. An unparseable non-empty entry is a
+    /// startup error (never skipped silently).
+    fn parse_bootstrap_peers(raw: &str) -> Result<Vec<String>, ConfigError> {
+        let mut out = Vec::new();
+        for entry in raw.split(',').map(str::trim).filter(|e| !e.is_empty()) {
+            match parse_udp_peer_addr(entry) {
+                Some(addr) => out.push(addr),
+                None => {
+                    return Err(ConfigError::InvalidValue {
+                        key: "NODE_BOOTSTRAP_PEERS".to_string(),
+                        reason: format!(
+                            "unparseable bootstrap peer: '{entry}' (expected /ip4/<host>/udp/<port> or host:port)"
+                        ),
+                    });
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// Parses an optional boolean environment variable (`"true"`/`"false"`), defaulting to `false`.
     fn parse_optional_bool(vars: &HashMap<String, String>, key: &str) -> Result<bool, ConfigError> {
         match vars.get(key).map(|v| v.trim()).filter(|v| !v.is_empty()) {
@@ -266,4 +302,35 @@ impl NodeConfig {
             }),
         }
     }
+}
+
+/// Parses one bootstrap/listen entry into a UDP `host:port` target.
+///
+/// Accepts `/ip4/<host>/udp/<port>/...` multiaddrs and bare `host:port`
+/// strings. Returns `None` for anything else (empty, TCP-only multiaddrs,
+/// or entries without a colon).
+#[must_use]
+pub fn parse_udp_peer_addr(entry: &str) -> Option<String> {
+    let entry = entry.trim();
+    if entry.is_empty() {
+        return None;
+    }
+    if let Some(rest) = entry.strip_prefix("/ip4/") {
+        let mut parts = rest.split('/');
+        let host = parts.next().filter(|h| !h.is_empty())?;
+        for part in parts.by_ref() {
+            if part == "udp" {
+                let port = parts.next().filter(|p| !p.is_empty())?;
+                if port.parse::<u16>().is_err() {
+                    return None;
+                }
+                return Some(format!("{host}:{port}"));
+            }
+        }
+        return None;
+    }
+    if entry.contains(':') && !entry.contains('/') {
+        return Some(entry.to_string());
+    }
+    None
 }

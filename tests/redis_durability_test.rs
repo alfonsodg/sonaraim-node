@@ -93,14 +93,19 @@ fn issue20_enqueue_restart_drain_returns_envelope_without_redis() {
 }
 
 /// Minimal in-memory mock Redis speaking just enough RESP2 for the queue ops.
+///
+/// The mock tracks per-key expirations set via `SET key val EX ttl` and
+/// lazily evicts expired entries on read/write, mirroring real Redis TTL
+/// semantics closely enough for window tests (see `issue20_mock_redis_honors_entry_ttl`).
+type MockRedisStore = std::collections::HashMap<String, Vec<(String, Option<u128>)>>;
+
 fn spawn_mock_redis() -> (String, Arc<Mutex<Vec<String>>>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock redis");
     let addr = listener.local_addr().expect("local addr").to_string();
     let log: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let log_clone = Arc::clone(&log);
-    // Queue contents: key -> list of JSON envelope records.
-    let store: Arc<Mutex<std::collections::HashMap<String, Vec<String>>>> =
-        Arc::new(Mutex::new(std::collections::HashMap::new()));
+    // Queue contents: key -> list of (JSON envelope record, expires_at_ms or None).
+    let store: Arc<Mutex<MockRedisStore>> = Arc::new(Mutex::new(MockRedisStore::new()));
     let store_clone = Arc::clone(&store);
     std::thread::spawn(move || {
         for stream in listener.incoming().flatten().take(50) {
@@ -108,6 +113,18 @@ fn spawn_mock_redis() -> (String, Arc<Mutex<Vec<String>>>) {
         }
     });
     (addr, log)
+}
+
+fn now_ms() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis())
+}
+
+/// Drops expired entries from `list` (in place), mirroring lazy Redis expiry.
+fn evict_expired(list: &mut Vec<(String, Option<u128>)>) {
+    let now = now_ms();
+    list.retain(|(_, exp)| exp.is_none_or(|e| e > now));
 }
 
 fn read_resp_command(stream: &mut TcpStream) -> Vec<String> {
@@ -140,7 +157,7 @@ fn read_resp_command(stream: &mut TcpStream) -> Vec<String> {
 fn handle_mock_conn(
     mut stream: TcpStream,
     log: &Arc<Mutex<Vec<String>>>,
-    store: &Arc<Mutex<std::collections::HashMap<String, Vec<String>>>>,
+    store: &Arc<Mutex<MockRedisStore>>,
 ) {
     loop {
         let args = read_resp_command(&mut stream);
@@ -159,15 +176,49 @@ fn handle_mock_conn(
             "RPUSH" => {
                 let mut st = store.lock().expect("store");
                 let list = st.entry(args[1].clone()).or_default();
-                list.push(args[2].clone());
+                evict_expired(list);
+                list.push((args[2].clone(), None));
                 let reply = format!(":{}\r\n", list.len());
                 let _ = stream.write_all(reply.as_bytes());
             }
+            "SET" => {
+                // SET key val [EX ttl_secs]: single-value key with optional TTL.
+                let ttl_ms = args
+                    .iter()
+                    .position(|a| a.eq_ignore_ascii_case("EX"))
+                    .and_then(|i| args.get(i + 1))
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .map(|ttl| now_ms() + u128::from(ttl) * 1000);
+                let mut st = store.lock().expect("store");
+                st.insert(args[1].clone(), vec![(args[2].clone(), ttl_ms)]);
+                let _ = stream.write_all(b"+OK\r\n");
+            }
+            "GET" => {
+                let mut st = store.lock().expect("store");
+                let hit = st.get_mut(&args[1]).and_then(|list| {
+                    evict_expired(list);
+                    list.first().map(|(v, _)| v.clone())
+                });
+                match hit {
+                    Some(val) => {
+                        let _ = stream.write_all(format!("${}\r\n{val}\r\n", val.len()).as_bytes());
+                    }
+                    None => {
+                        let _ = stream.write_all(b"$-1\r\n");
+                    }
+                }
+            }
             "LRANGE" => {
-                let st = store.lock().expect("store");
-                let list: &[String] = st.get(&args[1]).map_or(&[], Vec::as_slice);
-                let mut reply = format!("*{}\r\n", list.len());
-                for item in list {
+                let mut st = store.lock().expect("store");
+                let items: Vec<String> = st
+                    .get_mut(&args[1])
+                    .map(|list| {
+                        evict_expired(list);
+                        list.iter().map(|(v, _)| v.clone()).collect()
+                    })
+                    .unwrap_or_default();
+                let mut reply = format!("*{}\r\n", items.len());
+                for item in items {
                     reply.push_str(&format!("${}\r\n{item}\r\n", item.len()));
                 }
                 let _ = stream.write_all(reply.as_bytes());
@@ -182,14 +233,17 @@ fn handle_mock_conn(
                     .cloned()
                     .unwrap_or_default();
                 if let Some(list) = st.get_mut(&args[1]) {
+                    evict_expired(list);
                     let before = list.len();
-                    list.retain(|v| v != &needle);
+                    list.retain(|(v, _)| v != &needle);
                     removed = (before - list.len()) as u64;
                 }
                 let _ = stream.write_all(format!(":{removed}\r\n").as_bytes());
             }
             "DEL" => {
-                let _ = stream.write_all(b":1\r\n");
+                let mut st = store.lock().expect("store");
+                let existed = st.remove(&args[1]).is_some();
+                let _ = stream.write_all(format!(":{}\r\n", u8::from(existed)).as_bytes());
             }
             _ => {
                 let _ = stream.write_all(b"+OK\r\n");
@@ -230,4 +284,26 @@ fn issue20_redis_url_db_select_is_honored() {
         "expected SELECT after connect, got {seen:?}"
     );
     assert!(seen.contains(&"RPUSH".to_string()));
+}
+
+#[test]
+fn issue20_mock_redis_honors_entry_ttl() {
+    // Window test: a SET EX record must expire in the mock, mirroring real
+    // Redis TTL semantics. Guards against a mock that stores unexpirable
+    // values and would silently pass TTL-blind assertions.
+    let (addr, _log) = spawn_mock_redis();
+    let client = RedisRespClient::from_url(&format!("redis://{addr}/0")).expect("parse url");
+    client
+        .set_ex("sonaraim:ttl:win", "ephemeral", 1)
+        .expect("set_ex");
+    assert_eq!(
+        client.get("sonaraim:ttl:win").expect("get before expiry"),
+        Some("ephemeral".to_string())
+    );
+    std::thread::sleep(std::time::Duration::from_millis(1200));
+    assert_eq!(
+        client.get("sonaraim:ttl:win").expect("get after expiry"),
+        None,
+        "mock must evict SET EX records after their TTL"
+    );
 }
