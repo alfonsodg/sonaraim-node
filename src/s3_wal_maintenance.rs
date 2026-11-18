@@ -7,13 +7,17 @@ use std::net::{TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// Atomically rewrites a Write-Ahead Log (WAL) file via a temporary file,
-/// retaining only the provided active unacknowledged entries.
+/// Atomically rewrites an envelope Write-Ahead Log (WAL) file via a temporary
+/// file, retaining only the provided active unacknowledged envelope entries.
+///
+/// Each entry is `(envelope_id, recipient_mailbox_id, payload_hex,
+/// created_at_epoch_secs)`, matching the envelope WAL schema
+/// (`crate::envelope_wal::EnvelopeWalEntry`).
 ///
 /// Returns the number of entries written.
 pub fn compact_wal_file(
     path: &Path,
-    active_entries: &[(String, String, String)],
+    active_entries: &[(String, String, String, u64)],
 ) -> Result<usize, StorageError> {
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
@@ -22,9 +26,9 @@ pub fn compact_wal_file(
     }
     let tmp_path = PathBuf::from(format!("{}.tmp", path.display()));
     let mut file = fs::File::create(&tmp_path).map_err(|e| StorageError::Io(e.to_string()))?;
-    for (env_id, recipient, payload) in active_entries {
+    for (env_id, recipient, payload, created_at) in active_entries {
         let line = format!(
-            "{{\"envelope_id\":\"{env_id}\",\"recipient_mailbox_id\":\"{recipient}\",\"payload_hex\":\"{payload}\"}}\n"
+            "{{\"envelope_id\":\"{env_id}\",\"recipient_mailbox_id\":\"{recipient}\",\"payload_hex\":\"{payload}\",\"created_at_epoch_secs\":{created_at}}}\n"
         );
         file.write_all(line.as_bytes())
             .map_err(|e| StorageError::Io(e.to_string()))?;
@@ -36,6 +40,22 @@ pub fn compact_wal_file(
 
     fs::rename(&tmp_path, path).map_err(|e| StorageError::Io(e.to_string()))?;
     Ok(active_entries.len())
+}
+
+/// Legacy 3-tuple compaction wrapper kept for mailbox-only callers that do not
+/// track `created_at_epoch_secs` (records `now_secs()` at compaction time).
+///
+/// Prefer [`compact_wal_file`].
+pub fn compact_wal_file_legacy(
+    path: &Path,
+    active_entries: &[(String, String, String)],
+    now_epoch_secs: u64,
+) -> Result<usize, StorageError> {
+    let extended: Vec<(String, String, String, u64)> = active_entries
+        .iter()
+        .map(|(id, mbx, payload)| (id.clone(), mbx.clone(), payload.clone(), now_epoch_secs))
+        .collect();
+    compact_wal_file(path, &extended)
 }
 
 /// Performs an HTTP PUT upload of `payload` object bytes against an S3 or MinIO endpoint.

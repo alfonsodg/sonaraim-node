@@ -6,6 +6,7 @@
 //! PSI blind service, HTTP auth/routing helpers, HTTP REST server, and health status serializer.
 
 pub mod config;
+pub mod envelope_wal;
 pub mod health;
 pub mod http_auth;
 pub mod http_federation;
@@ -22,4 +23,4 @@ pub mod s3_wal_maintenance;
 pub mod storage;
 pub mod udp_gossip;
 
-pub use s3_wal_maintenance::{compact_wal_file, put_s3_object_http};
+pub use s3_wal_maintenance::{compact_wal_file, compact_wal_file_legacy, put_s3_object_http};
