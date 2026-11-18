@@ -1,7 +1,7 @@
 //! HTTP handlers for Key Transparency identity registrations and queries.
 
+use crate::federation_client::replicate_identity_to_peers;
 use crate::http_auth::err_json;
-use crate::http_federation::replicate_identity_to_peers;
 use crate::http_server::{now_secs, NodeState};
 use crate::merkle::{IdentityLogEntry, KeyTransparencyLog};
 use crate::p2p::SignedTreeHead;

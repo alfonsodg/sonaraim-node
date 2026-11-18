@@ -7,3 +7,5 @@ license = "Apache-2.0"
 repository = "https://github.com/alfonsodg/sonaraim-node"
 
 [dependencies]
+rustls = "0.23"
+webpki-roots = "0.26"

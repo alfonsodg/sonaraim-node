@@ -366,10 +366,15 @@ Registers or updates a peer's QUIC multiaddr and HTTP RPC endpoint.
 ```json
 {
   "peer_id": "node-peer-02",
-  "rpc_url": "http://node2.sonaraim.internal:8040",
-  "multiaddr": "/ip4/10.0.0.2/udp/4001/quic-v1"
+  "rpc_url": "https://node2.sonaraim.internal",
+  "multiaddr": "/ip4/10.0.0.2/udp/4001/quic-v1",
+  "auth_token": "<node-peer-02 NODE_API_AUTH_TOKEN>"
 }
 ```
+
+`rpc_url` accepts `http://` (private networks) or `https://` (TLS through
+the peer's Nginx ingress; see `docs/FEDERATION_TLS.md`). `auth_token` is the
+peer's Bearer token, attached to every replication call.
 
 **Response (`200 OK`)**:
 
