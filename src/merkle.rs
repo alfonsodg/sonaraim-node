@@ -254,16 +254,8 @@ impl KeyTransparencyLog {
         Self::digest_hex(&preimage)
     }
 
-    /// Produces a 128-bit deterministic hexadecimal digest from `input`.
+    /// Produces a 256-bit deterministic hexadecimal digest from `input` (SHA-256).
     fn digest_hex(input: &str) -> String {
-        let mut h1: u64 = 0xcbf2_9ce4_8422_2325;
-        let mut h2: u64 = 0x9e37_79b9_7f4a_7c15;
-        for (i, byte) in input.bytes().enumerate() {
-            h1 ^= u64::from(byte);
-            h1 = h1.wrapping_mul(0x0100_0000_01b3).rotate_left(5);
-            h2 ^= u64::from(byte).wrapping_add(i as u64);
-            h2 = h2.wrapping_mul(0xbf58_476d_1ce4_e5b9).rotate_right(7);
-        }
-        format!("{h1:016x}{h2:016x}")
+        crate::crypto::sha256_hex(input.as_bytes())
     }
 }

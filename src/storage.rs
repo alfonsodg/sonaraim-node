@@ -214,23 +214,6 @@ impl NodeSnapshot {
     }
 }
 
-/// Generates a deterministic S3-compatible presigned URL for client-encrypted media blobs.
-#[must_use]
-pub fn generate_s3_presigned_url(
-    endpoint_url: &str,
-    bucket: &str,
-    sha256_ciphertext: &str,
-    content_length: u64,
-) -> String {
-    let base = endpoint_url.trim_end_matches('/');
-    let mut acc: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in format!("{bucket}:{sha256_ciphertext}:{content_length}").bytes() {
-        acc ^= u64::from(b);
-        acc = acc.wrapping_mul(0x0100_0000_01b3);
-    }
-    format!("{base}/{bucket}/{sha256_ciphertext}?sig={acc:016x}&len={content_length}")
-}
-
 /// Extracts a string value for `"key":"value"` from a flat JSON payload.
 #[must_use]
 pub fn extract_json_str(raw: &str, key: &str) -> Option<String> {

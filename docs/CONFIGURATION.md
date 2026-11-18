@@ -35,8 +35,10 @@
 | `S3_ENDPOINT_URL` | `String` | No | Endpoint URL for S3/MinIO presigned media uploads and object storage. | `http://minio:9000` |
 | `S3_BUCKET_MEDIA` | `String` | No | S3 bucket name for client-side encrypted media attachments. | `sonaraim-media` |
 | `S3_BUCKET_VAULT` | `String` | No | S3 bucket name for Passkey Zero-Knowledge vaults. | `sonaraim-vault` |
-| `S3_ACCESS_KEY_ID` | `String` | No | S3 access key ID for presigning and storage operations. | `minioadmin` |
-| `S3_SECRET_ACCESS_KEY` | `String` | No | S3 secret access key for presigning and storage operations. | `miniopassword` |
+| `S3_ACCESS_KEY_ID` | `String` | No | S3 access key ID for SigV4 presigning of media uploads. | `minioadmin` |
+| `S3_SECRET_ACCESS_KEY` | `String` | No | S3 secret access key for SigV4 presigning of media uploads. | `miniopassword` |
+| `S3_REGION` | `String` | No | AWS region for the SigV4 signing scope (defaults to `us-east-1`). | `us-east-1` |
+| `NODE_PSI_SERVER_SECRET` | `String` | No | HMAC server secret for PSI token derivation (falls back to `NODE_ID` in dev). | `psi-secret-...` |
 
 ---
 

@@ -28,13 +28,13 @@ pub fn handle_get_identity(st: &NodeState, did: &str) -> (u16, &'static str, Str
 }
 
 /// Handles `GET /v1/identity/by-phone/:token`.
+///
+/// The incoming token is evaluated with the node's PSI server secret and only
+/// the HMAC digest is looked up: plaintext phone tokens are never stored.
 pub fn handle_get_identity_by_phone(st: &NodeState, token: &str) -> (u16, &'static str, String) {
-    let eval = crate::psi_service::evaluate_psi_single(token, st.config.node_id.as_bytes());
-    if let Some(did) = st
-        .phone_index
-        .get(token)
-        .or_else(|| st.phone_index.get(&eval))
-    {
+    let secret = st.config.psi_secret_bytes();
+    let eval = crate::psi_service::evaluate_psi_single(token, &secret);
+    if let Some(did) = st.phone_index.get(&eval) {
         (
             200,
             "OK",
@@ -115,9 +115,9 @@ pub fn handle_post_identity(st: &mut NodeState, body: &str) -> (u16, &'static st
                 },
             );
             if let Some(ref pt) = phone_token {
+                // Store only the HMAC digest: raw phone tokens never persist.
                 let eval =
-                    crate::psi_service::evaluate_psi_single(pt, st.config.node_id.as_bytes());
-                st.phone_index.insert(pt.clone(), did.clone());
+                    crate::psi_service::evaluate_psi_single(pt, &st.config.psi_secret_bytes());
                 st.phone_index.insert(eval, did);
             }
             (201, "Created", json)

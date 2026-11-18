@@ -169,8 +169,9 @@ impl MailboxStore {
 
     /// Derives a deterministic 128-bit blind push wake-up token formatted as hex.
     ///
-    /// Uses two independent FNV-1a 64-bit passes with domain separation so push
-    /// notification relays can wake a recipient device without learning sender metadata.
+    /// Uses SHA-256 over a domain-separated payload, truncated to 128 bits, so
+    /// push notification relays can wake a recipient device without learning
+    /// sender metadata and without a spoofable non-cryptographic hash.
     #[must_use]
     pub fn derive_blind_wake_token(
         mailbox_id: &str,
@@ -179,18 +180,7 @@ impl MailboxStore {
     ) -> String {
         let payload =
             format!("sonaraim:wake:v1|{mailbox_id}|{envelope_id}|{created_at_epoch_secs}");
-        let hi = fnv1a_64(payload.as_bytes(), 0xcbf2_9ce4_8422_2325);
-        let lo = fnv1a_64(payload.as_bytes(), 0x8422_2325_cbf2_9ce4);
-        format!("wake_{hi:016x}{lo:016x}")
+        let digest = crate::crypto::sha256_hex(payload.as_bytes());
+        format!("wake_{}", &digest[..32])
     }
-}
-
-/// Computes a 64-bit FNV-1a digest with a custom initial basis.
-fn fnv1a_64(data: &[u8], basis: u64) -> u64 {
-    let mut hash = basis;
-    for &byte in data {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(0x0100_0000_01b3);
-    }
-    hash
 }

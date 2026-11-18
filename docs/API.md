@@ -51,12 +51,12 @@ Exposes Prometheus counters and gauges (`text/plain; version=0.0.4`).
 **Response Metrics Output (`200 OK`)**:
 
 ```text
-# HELP sonaraim_node_kt_log_entries_total Total Key Transparency Merkle log entries
-# TYPE sonaraim_node_kt_log_entries_total counter
-sonaraim_node_kt_log_entries_total 12
-# HELP sonaraim_node_relay_queued_total Total queued store-and-forward envelopes
-# TYPE sonaraim_node_relay_queued_total gauge
-sonaraim_node_relay_queued_total 3
+# HELP sonaraim_node_kt_entries_total Total Key Transparency log entries
+# TYPE sonaraim_node_kt_entries_total counter
+sonaraim_node_kt_entries_total 12
+# HELP sonaraim_node_queued_envelopes Currently queued relay envelopes
+# TYPE sonaraim_node_queued_envelopes gauge
+sonaraim_node_queued_envelopes 3
 ```
 
 ---
@@ -418,15 +418,17 @@ Performs blind contact discovery. Evaluates blinded phone tokens without learnin
 
 ### `POST /v1/media/presign`
 
-Generates an S3/MinIO presigned PUT upload URL for client-side encrypted media attachments.
+Generates a real AWS Signature Version 4 presigned PUT upload URL for
+client-side encrypted media attachments. Requires `S3_ACCESS_KEY_ID` and
+`S3_SECRET_ACCESS_KEY`; without credentials the endpoint returns
+`400 MISSING_S3_CREDENTIALS` instead of a forged signature.
 
 **Request Payload**:
 
 ```json
 {
-  "object_key": "attachments/0193218a-media-01.enc",
-  "content_type": "application/octet-stream",
-  "size_bytes": 1048576
+  "sha256_ciphertext": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "content_length": 1048576
 }
 ```
 
@@ -434,11 +436,15 @@ Generates an S3/MinIO presigned PUT upload URL for client-side encrypted media a
 
 ```json
 {
-  "upload_url": "http://minio:9000/media-vault/attachments/0193218a-media-01.enc?X-Amz-Signature=...",
-  "object_key": "attachments/0193218a-media-01.enc",
+  "presigned_url": "http://minio:9000/sonaraim-media/e3b0c442...?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Signature=...",
+  "object_key": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   "expires_in_secs": 900
 }
 ```
+
+The object key is the SHA-256 of the ciphertext; the URL carries the SigV4
+`X-Amz-Algorithm`, `X-Amz-Credential`, `X-Amz-Date`, `X-Amz-Expires`,
+`X-Amz-SignedHeaders`, and `X-Amz-Signature` query parameters.
 
 ---
 
