@@ -21,6 +21,8 @@ pub struct HealthStatus {
     pub kt_log_entries: usize,
     /// Current hexadecimal root hash of the Key Transparency log.
     pub kt_tree_head: String,
+    /// Last Redis error observed by the relay paths, if any.
+    pub redis_last_error: Option<String>,
 }
 
 impl HealthStatus {
@@ -39,13 +41,34 @@ impl HealthStatus {
             queued_envelopes: relay.total_queued(),
             kt_log_entries: kt_log.len(),
             kt_tree_head: kt_log.tree_head(),
+            redis_last_error: None,
         }
+    }
+
+    /// Builds a [`HealthStatus`] snapshot including the last Redis error.
+    #[must_use]
+    pub fn from_state_with_redis_error(
+        config: &NodeConfig,
+        relay: &MailboxStore,
+        kt_log: &KeyTransparencyLog,
+        redis_last_error: Option<&str>,
+    ) -> Self {
+        let mut status = Self::from_state(config, relay, kt_log);
+        status.redis_last_error = redis_last_error.map(ToString::to_string);
+        if status.redis_last_error.is_some() {
+            status.status = "degraded".to_string();
+        }
+        status
     }
 
     /// Serializes this [`HealthStatus`] report into a deterministic JSON string
     /// suitable for HTTP `/health` responses and structured logs.
     #[must_use]
     pub fn to_json(&self) -> String {
+        let redis_field = self
+            .redis_last_error
+            .as_deref()
+            .map_or("null".to_string(), |e| format!("\"{}\"", escape_json(e)));
         format!(
             concat!(
                 "{{",
@@ -55,7 +78,8 @@ impl HealthStatus {
                 "\"p2p_listen_addr\":\"{}\",",
                 "\"queued_envelopes\":{},",
                 "\"kt_log_entries\":{},",
-                "\"kt_tree_head\":\"{}\"",
+                "\"kt_tree_head\":\"{}\",",
+                "\"redis_last_error\":{}",
                 "}}"
             ),
             escape_json(&self.status),
@@ -65,6 +89,7 @@ impl HealthStatus {
             self.queued_envelopes,
             self.kt_log_entries,
             escape_json(&self.kt_tree_head),
+            redis_field,
         )
     }
 

@@ -175,7 +175,13 @@ fn dispatch(
     }
     match (method, path) {
         ("GET", "/health") => {
-            let h = HealthStatus::from_state(&st.config, &st.relay, &st.kt_log).to_json();
+            let h = HealthStatus::from_state_with_redis_error(
+                &st.config,
+                &st.relay,
+                &st.kt_log,
+                st.redis_last_error.as_deref(),
+            )
+            .to_json();
             (200, "OK", h)
         }
         ("GET", "/metrics") => {
@@ -211,7 +217,7 @@ fn dispatch(
         }
         ("GET", p) if p.starts_with("/v1/relay/mailboxes/") => {
             let mbx = &p["/v1/relay/mailboxes/".len()..];
-            handle_get_mailbox(&st, mbx)
+            handle_get_mailbox(&mut st, mbx)
         }
         ("POST", "/v1/media/presign") => handle_presign_json(body),
         ("POST", "/v1/contacts/psi") => {

@@ -25,25 +25,28 @@ pub fn handle_post_envelope(st: &mut NodeState, body: &str) -> (u16, &'static st
     };
     let payload_hex = extract_json_str(body, "payload_hex").unwrap_or_default();
     let replicated = body.contains("\"replicated\":true") || body.contains("\"replicated\": true");
+    let created_at = now_secs();
     if let Some(ref redis) = st.redis {
-        let _ = redis.set_ex(
-            &format!("sonaraim:mbx:{mbx}"),
-            &env_id,
-            st.config.envelope_ttl_seconds,
+        let record = format!(
+            "{{\"envelope_id\":\"{env_id}\",\"recipient_mailbox_id\":\"{mbx}\",\"payload_hex\":\"{payload_hex}\",\"created_at_epoch_secs\":{created_at}}}"
         );
+        if let Err(e) = redis.rpush(&format!("sonaraim:queue:{mbx}"), &record) {
+            st.redis_last_error = Some(e.to_string());
+            eprintln!("{{\"level\":\"ERROR\",\"msg\":\"redis RPUSH failed\",\"error\":\"{e}\"}}");
+        }
     }
     let token = st.relay.enqueue(SealedEnvelope {
         envelope_id: env_id.clone(),
         recipient_mailbox_id: mbx.clone(),
         ciphertext: payload_hex.as_bytes().to_vec(),
-        created_at_epoch_secs: now_secs(),
+        created_at_epoch_secs: created_at,
     });
     if let Some(ref envelope_wal) = st.envelope_wal_path {
         let entry = EnvelopeWalEntry {
             envelope_id: env_id.clone(),
             recipient_mailbox_id: mbx.clone(),
             payload_hex: payload_hex.clone(),
-            created_at_epoch_secs: now_secs(),
+            created_at_epoch_secs: created_at,
         };
         if let Err(e) = append_envelope_wal_entry(envelope_wal, &entry) {
             eprintln!(
@@ -162,8 +165,51 @@ pub fn handle_get_signals(st: &mut NodeState, mailbox_id: &str) -> (u16, &'stati
 }
 
 /// Handles `GET /v1/relay/mailboxes/:id`.
-pub fn handle_get_mailbox(st: &NodeState, mailbox_id: &str) -> (u16, &'static str, String) {
-    let entries = st.relay.get_active(mailbox_id, now_secs());
+///
+/// When Redis is configured, queued envelopes are additionally merged from the
+/// Redis list (`LRANGE`) so a node that drained its in-memory queue (e.g. after
+/// restart before WAL replay, or a peer-forwarded write) still serves them.
+/// Redis failures are recorded in state and logged, never silently dropped.
+pub fn handle_get_mailbox(st: &mut NodeState, mailbox_id: &str) -> (u16, &'static str, String) {
+    let mut entries = st.relay.get_active(mailbox_id, now_secs());
+    let redis_records: Vec<String> = if let Some(ref redis) = st.redis {
+        match redis.lrange(&format!("sonaraim:queue:{mailbox_id}")) {
+            Ok(records) => records,
+            Err(e) => {
+                st.redis_last_error = Some(e.to_string());
+                eprintln!(
+                    "{{\"level\":\"ERROR\",\"msg\":\"redis LRANGE failed\",\"error\":\"{e}\"}}"
+                );
+                Vec::new()
+            }
+        }
+    } else {
+        Vec::new()
+    };
+    {
+        let known: std::collections::HashSet<String> =
+            entries.iter().map(|e| e.envelope_id.clone()).collect();
+        for record in &redis_records {
+            let (Some(env_id), Some(mbx)) = (
+                extract_json_str(record, "envelope_id"),
+                extract_json_str(record, "recipient_mailbox_id"),
+            ) else {
+                continue;
+            };
+            if mbx != mailbox_id || known.contains(env_id.as_str()) {
+                continue;
+            }
+            let payload_hex = extract_json_str(record, "payload_hex").unwrap_or_default();
+            let created_at = crate::storage::extract_json_u64(record, "created_at_epoch_secs")
+                .unwrap_or_else(now_secs);
+            entries.push(SealedEnvelope {
+                envelope_id: env_id,
+                recipient_mailbox_id: mbx,
+                ciphertext: payload_hex.into_bytes(),
+                created_at_epoch_secs: created_at,
+            });
+        }
+    }
     let ids: Vec<String> = entries
         .iter()
         .map(|e| format!("\"{}\"", e.envelope_id))
@@ -198,12 +244,33 @@ pub fn handle_ack_mailbox(
     let ids = extract_json_str_array(body, "envelope_ids");
     let acked = st.relay.ack(mailbox_id, &ids);
     if let Some(ref redis) = st.redis {
-        if let Err(e) = redis.del(&format!("sonaraim:mbx:{mailbox_id}")) {
-            st.redis_last_error = Some(e.to_string());
-            eprintln!(
-                "{{\"level\":\"ERROR\",\"msg\":\"redis DEL failed\",\"error\":\"{}\"}}",
-                st.redis_last_error.as_deref().unwrap_or("unknown")
-            );
+        let queue_key = format!("sonaraim:queue:{mailbox_id}");
+        if ids.is_empty() {
+            if let Err(e) = redis.del(&queue_key) {
+                st.redis_last_error = Some(e.to_string());
+                eprintln!("{{\"level\":\"ERROR\",\"msg\":\"redis DEL failed\",\"error\":\"{e}\"}}");
+            }
+        } else {
+            for id in &ids {
+                let record_prefix = format!("{{\"envelope_id\":\"{id}\"");
+                let victims: Vec<String> = match redis.lrange(&queue_key) {
+                    Ok(records) => records
+                        .into_iter()
+                        .filter(|r| r.contains(&record_prefix))
+                        .collect(),
+                    Err(e) => {
+                        st.redis_last_error = Some(e.to_string());
+                        eprintln!("{{\"level\":\"ERROR\",\"msg\":\"redis LRANGE failed\",\"error\":\"{e}\"}}");
+                        Vec::new()
+                    }
+                };
+                for record in victims {
+                    if let Err(e) = redis.lrem(&queue_key, &record) {
+                        st.redis_last_error = Some(e.to_string());
+                        eprintln!("{{\"level\":\"ERROR\",\"msg\":\"redis LREM failed\",\"error\":\"{e}\"}}");
+                    }
+                }
+            }
         }
     }
     // Ack compaction rewrites only the envelope WAL; the identity WAL is
