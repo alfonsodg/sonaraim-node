@@ -270,9 +270,17 @@ impl NodeConfig {
 
     /// Parses a comma-separated `NODE_BOOTSTRAP_PEERS` value into UDP
     /// `host:port` targets. Accepts `/ip4/<host>/udp/<port>/...` multiaddrs
-    /// and bare `host:port` strings. An unparseable non-empty entry is a
+    /// and bare `host:port` strings. The legacy sentinels empty, `none`
+    /// (any case, trimmed), and `-` mean an empty peer list (standalone
+    /// node). An unparseable non-empty entry is a
     /// startup error (never skipped silently).
     fn parse_bootstrap_peers(raw: &str) -> Result<Vec<String>, ConfigError> {
+        // Legacy convention: empty, `none` (any case, trimmed), or `-`
+        // means "no bootstrap peers" (standalone node).
+        let trimmed = raw.trim();
+        if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("none") || trimmed == "-" {
+            return Ok(Vec::new());
+        }
         let mut out = Vec::new();
         for entry in raw.split(',').map(str::trim).filter(|e| !e.is_empty()) {
             match parse_udp_peer_addr(entry) {

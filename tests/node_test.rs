@@ -88,6 +88,24 @@ fn test_node_config_bootstrap_peers_parsed_and_validated() {
         NodeConfig::from_map(&bad),
         Err(ConfigError::InvalidValue { .. })
     ));
+
+    // Legacy sentinels mean an empty peer list (standalone node, no join).
+    for sentinel in ["", "   ", "none", "None", "NONE", "  none  ", "-"] {
+        let mut map = sample_env_map();
+        map.insert("NODE_BOOTSTRAP_PEERS".to_string(), sentinel.to_string());
+        let cfg = NodeConfig::from_map(&map)
+            .unwrap_or_else(|e| panic!("sentinel '{sentinel}' should parse to empty: {e}"));
+        assert!(cfg.bootstrap_peers.is_empty(), "sentinel '{sentinel}'");
+    }
+
+    // Real values still parse alongside the sentinels.
+    let mut mixed = sample_env_map();
+    mixed.insert(
+        "NODE_BOOTSTRAP_PEERS".to_string(),
+        "/ip4/10.0.0.3/udp/9003".to_string(),
+    );
+    let cfg = NodeConfig::from_map(&mixed).expect("real peers should still parse");
+    assert_eq!(cfg.bootstrap_peers, vec!["10.0.0.3:9003".to_string()]);
 }
 
 #[test]

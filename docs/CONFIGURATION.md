@@ -47,7 +47,7 @@
 
 | Variable | Type | Required | Description | Example |
 | :--- | :--- | :--- | :--- | :--- |
-| `NODE_BOOTSTRAP_PEERS` | `String` | No | Comma-separated bootstrap peers (`/ip4/<host>/udp/<port>` or `host:port`). Parsed into `NodeConfig.bootstrap_peers` at startup; an unparseable entry fails startup with `ConfigError::InvalidValue` (fail fast, never a silent default). Empty/unset means no bootstrap join. | `/ip4/10.0.0.2/udp/9001,/ip4/10.0.0.3/udp/9001` |
+| `NODE_BOOTSTRAP_PEERS` | `String` | No | Comma-separated bootstrap peers (`/ip4/<host>/udp/<port>` or `host:port`). Parsed into `NodeConfig.bootstrap_peers` at startup; an unparseable entry fails startup with `ConfigError::InvalidValue` (fail fast, never a silent default). Empty/unset — or the legacy sentinels `none` (any case, trimmed) and `-` — means no bootstrap join. | `/ip4/10.0.0.2/udp/9001,/ip4/10.0.0.3/udp/9001` |
 
 > **Deprecated: `NODE_P2P_PORT`.** This variable was documented in earlier revisions but is not read by any code. The UDP gossip bind address comes exclusively from `NODE_P2P_LISTEN_ADDR` (parsed as `/ip4/<host>/udp/<port>` or `host:port`). Do not set `NODE_P2P_PORT`; it has no effect.
 
