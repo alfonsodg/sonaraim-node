@@ -260,53 +260,35 @@ impl NodeSnapshot {
 }
 
 /// Extracts a string value for `"key":"value"` from a flat JSON payload.
+///
+/// Structural, order-independent, and escape-aware (`crate::json`): values
+/// containing quotes, colons, or key-like text parse exactly.
 #[must_use]
 pub fn extract_json_str(raw: &str, key: &str) -> Option<String> {
-    let pattern = format!("\"{key}\":\"");
-    let start = raw.find(&pattern)? + pattern.len();
-    let rest = &raw[start..];
-    let end = rest.find('"')?;
-    Some(rest[..end].to_string())
+    crate::json::json_string(raw, key)
 }
 
 /// Extracts a `usize` integer value for `"key":123` from a flat JSON payload.
+///
+/// Tolerates whitespace around the colon; non-numeric values yield `None`.
 #[must_use]
 pub fn extract_json_usize(raw: &str, key: &str) -> Option<usize> {
-    let pattern = format!("\"{key}\":");
-    let start = raw.find(&pattern)? + pattern.len();
-    let digits: String = raw[start..]
-        .chars()
-        .take_while(|c| c.is_ascii_digit())
-        .collect();
-    digits.parse::<usize>().ok()
+    crate::json::json_usize(raw, key)
 }
 
 /// Extracts a `u64` integer value for `"key":123` from a flat JSON payload.
+///
+/// Tolerates whitespace around the colon; non-numeric values yield `None`.
 #[must_use]
 pub fn extract_json_u64(raw: &str, key: &str) -> Option<u64> {
-    let pattern = format!("\"{key}\":");
-    let start = raw.find(&pattern)? + pattern.len();
-    let digits: String = raw[start..]
-        .chars()
-        .take_while(|c| c.is_ascii_digit())
-        .collect();
-    digits.parse::<u64>().ok()
+    crate::json::json_u64(raw, key)
 }
 
 /// Extracts a string array for `"key":["a","b"]` from a flat JSON payload.
+///
+/// Element-wise escape-aware: commas or quotes inside quoted elements no
+/// longer split or truncate values.
 #[must_use]
 pub fn extract_json_str_array(raw: &str, key: &str) -> Vec<String> {
-    let pat = format!("\"{key}\":[");
-    let Some(start) = raw.find(&pat) else {
-        return Vec::new();
-    };
-    let rest = &raw[start + pat.len()..];
-    let Some(end) = rest.find(']') else {
-        return Vec::new();
-    };
-    rest[..end]
-        .split(',')
-        .map(|s| s.trim().trim_matches('"').to_string())
-        .filter(|s| !s.is_empty())
-        .collect()
+    crate::json::json_string_array(raw, key)
 }

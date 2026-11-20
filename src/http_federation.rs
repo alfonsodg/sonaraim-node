@@ -10,36 +10,12 @@ use crate::storage::extract_json_str;
 use crate::udp_gossip::{decode_tree_head_json, encode_tree_head_json};
 
 /// Parses top-level JSON objects from an array named `key` in `raw`.
+///
+/// String-literal aware (`crate::json`): braces inside quoted values no
+/// longer split or merge objects.
 #[must_use]
 pub fn parse_json_objects(raw: &str, key: &str) -> Vec<String> {
-    let pat = format!("\"{key}\":[");
-    let Some(start) = raw.find(&pat) else {
-        return Vec::new();
-    };
-    let rest = &raw[start + pat.len()..];
-    let Some(end) = rest.find(']') else {
-        return Vec::new();
-    };
-    let slice = &rest[..end];
-    let mut out = Vec::new();
-    let (mut depth, mut obj_start) = (0, None);
-    for (i, b) in slice.bytes().enumerate() {
-        if b == b'{' {
-            if depth == 0 {
-                obj_start = Some(i);
-            }
-            depth += 1;
-        } else if b == b'}' {
-            depth -= 1;
-            if depth == 0 {
-                if let Some(s) = obj_start {
-                    out.push(slice[s..=i].to_string());
-                }
-                obj_start = None;
-            }
-        }
-    }
-    out
+    crate::json::json_objects(raw, key)
 }
 
 /// Handles `POST /v1/p2p/peers`.
