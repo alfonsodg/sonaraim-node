@@ -83,6 +83,9 @@ pub fn handle_post_identity(st: &mut NodeState, body: &str) -> (u16, &'static st
     let phone_token =
         extract_json_str(body, "phone_token").or_else(|| extract_json_str(body, "phone_e164"));
     let epoch = now_secs();
+    let phone_digest = phone_token
+        .as_deref()
+        .map(|pt| crate::psi_service::evaluate_psi_single(pt, &st.config.psi_secret_bytes()));
     match st.kt_log.append(&did, &commit, epoch) {
         Ok((index, _)) => {
             if let Some(ref wal) = st.wal_path {
@@ -90,6 +93,7 @@ pub fn handle_post_identity(st: &mut NodeState, body: &str) -> (u16, &'static st
                     did: did.clone(),
                     key_commitment: commit.clone(),
                     epoch_secs: epoch,
+                    phone_digest: phone_digest.clone(),
                 };
                 if let Err(e) = append_wal_entry(wal, &entry) {
                     eprintln!(
@@ -132,10 +136,14 @@ pub fn handle_post_identity(st: &mut NodeState, body: &str) -> (u16, &'static st
                     key_commitment: commit,
                     epoch_secs: epoch,
                     leaf_hash,
+                    phone_digest: phone_digest.clone(),
                 },
             );
             if let Some(ref pt) = phone_token {
                 // Store only the HMAC digest: raw phone tokens never persist.
+                // The digest was already persisted to the identity WAL above,
+                // computed under the node's active PSI secret id, so the
+                // in-memory index and the durable record always agree.
                 let eval =
                     crate::psi_service::evaluate_psi_single(pt, &st.config.psi_secret_bytes());
                 st.phone_index.insert(eval, did);

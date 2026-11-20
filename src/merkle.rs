@@ -57,6 +57,11 @@ pub struct IdentityLogEntry {
     pub epoch_secs: u64,
     /// Deterministic leaf hash in hexadecimal format.
     pub leaf_hash: String,
+    /// Phone-token HMAC digest bound at registration (never the raw token).
+    ///
+    /// The leaf hash covers only `(index, did, key_commitment, epoch_secs)`,
+    /// so recording a digest later never rewrites Merkle history.
+    pub phone_digest: Option<String>,
 }
 
 /// Step in a Merkle inclusion proof path.
@@ -139,6 +144,7 @@ impl KeyTransparencyLog {
             key_commitment: trimmed_key.to_string(),
             epoch_secs,
             leaf_hash,
+            phone_digest: None,
         });
 
         Ok((index, self.tree_head()))

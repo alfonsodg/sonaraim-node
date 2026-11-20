@@ -100,6 +100,20 @@ fn ingest_sync_payload(
         ) {
             if !st.did_index.contains_key(&did) {
                 let epoch = now_secs();
+                // Federated sync carries the origin's digest in `GET /v1/p2p/sync`
+                // `identities[].phone_digest` (digest-only, raw tokens never cross the
+                // wire). Local registrations re-derive the digest from the submitted
+                // raw token because clients never send digests.
+                let phone_digest = extract_json_str(&obj, "phone_digest")
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| {
+                        extract_json_str(&obj, "phone_token").map(|pt| {
+                            crate::psi_service::evaluate_psi_single(
+                                &pt,
+                                &st.config.psi_secret_bytes(),
+                            )
+                        })
+                    });
                 if let Ok((index, _)) = st.kt_log.append(&did, &commit, epoch) {
                     let leaf_hash = KeyTransparencyLog::hash_leaf(index, &did, &commit, epoch);
                     st.did_index.insert(
@@ -107,15 +121,28 @@ fn ingest_sync_payload(
                         IdentityLogEntry {
                             index,
                             did: did.clone(),
-                            key_commitment: commit,
+                            key_commitment: commit.clone(),
                             epoch_secs: epoch,
                             leaf_hash,
+                            phone_digest: phone_digest.clone(),
                         },
                     );
-                    if let Some(pt) = extract_json_str(&obj, "phone_token") {
-                        let secret = st.config.psi_secret_bytes();
-                        let eval = crate::psi_service::evaluate_psi_single(&pt, &secret);
-                        st.phone_index.insert(eval, did);
+                    // Persist federated inserts to the identity WAL (same
+                    // schema as local registrations, #16 one-file-one-schema);
+                    // on restart the entry replays like any other line.
+                    if let Some(ref wal) = st.wal_path {
+                        let entry = crate::storage::WalEntry {
+                            did: did.clone(),
+                            key_commitment: commit,
+                            epoch_secs: epoch,
+                            phone_digest: phone_digest.clone(),
+                        };
+                        if let Err(e) = crate::storage::append_wal_entry(wal, &entry) {
+                            eprintln!("{{\"level\":\"ERROR\",\"msg\":\"federated identity wal append failed\",\"error\":\"{e}\"}}");
+                        }
+                    }
+                    if let Some(digest) = phone_digest {
+                        st.phone_index.insert(digest, did);
                     }
                 }
             }
@@ -175,8 +202,13 @@ pub fn handle_get_sync(st: &NodeState) -> (u16, &'static str, String) {
         .did_index
         .values()
         .map(|e| {
+            let digest_field = e
+                .phone_digest
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .map_or_else(String::new, |d| format!(",\"phone_digest\":\"{d}\""));
             format!(
-                "{{\"did\":\"{}\",\"key_commitment\":\"{}\"}}",
+                "{{\"did\":\"{}\",\"key_commitment\":\"{}\"{digest_field}}}",
                 e.did, e.key_commitment
             )
         })

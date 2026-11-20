@@ -29,6 +29,11 @@ impl fmt::Display for StorageError {
 impl std::error::Error for StorageError {}
 
 /// Single durable Write-Ahead Log (WAL) record for a Key Transparency identity binding.
+///
+/// `phone_digest` persists the HMAC-SHA256 digest of the registration's phone
+/// token (never the raw token). Replay rebuilds `phone_index` directly from
+/// the digest, so no re-derivation is needed. Identities without a phone
+/// binding persist `None` and replay identically to legacy 3-field lines.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WalEntry {
     /// Decentralized Identifier (`did:sonaraim:*` or `did:web:*`).
@@ -37,19 +42,34 @@ pub struct WalEntry {
     pub key_commitment: String,
     /// Unix epoch timestamp (in seconds) when the binding was appended.
     pub epoch_secs: u64,
+    /// Persisted phone-token digest (`phone_digest`), if the DID registered one.
+    pub phone_digest: Option<String>,
 }
 
 impl WalEntry {
     /// Serializes this [`WalEntry`] as a JSON-lines record.
+    ///
+    /// `phone_digest` carries the HMAC-SHA256 digest of the registration's
+    /// phone token (never the raw token); `None` emits the legacy 3-field
+    /// line so single-purpose identity WALs stay readable.
     #[must_use]
     pub fn to_json_line(&self) -> String {
-        format!(
-            "{{\"did\":\"{}\",\"key_commitment\":\"{}\",\"epoch_secs\":{}}}\n",
-            self.did, self.key_commitment, self.epoch_secs
-        )
+        match self.phone_digest.as_deref().filter(|s| !s.is_empty()) {
+            Some(digest) => format!(
+                "{{\"did\":\"{}\",\"key_commitment\":\"{}\",\"epoch_secs\":{},\"phone_digest\":\"{digest}\"}}\n",
+                self.did, self.key_commitment, self.epoch_secs
+            ),
+            None => format!(
+                "{{\"did\":\"{}\",\"key_commitment\":\"{}\",\"epoch_secs\":{}}}\n",
+                self.did, self.key_commitment, self.epoch_secs
+            ),
+        }
     }
 
     /// Parses a single JSON-lines record into a [`WalEntry`].
+    ///
+    /// The optional `"phone_digest"` field (HMAC, never the raw token) is
+    /// accepted when present and defaults to `None` on legacy 3-field lines.
     pub fn from_json_line(line: &str) -> Result<Self, StorageError> {
         let trimmed = line.trim();
         let did = extract_json_str(trimmed, "did")
@@ -63,6 +83,7 @@ impl WalEntry {
             did,
             key_commitment,
             epoch_secs,
+            phone_digest: extract_json_str(trimmed, "phone_digest").filter(|s| !s.is_empty()),
         })
     }
 }
@@ -116,17 +137,24 @@ pub fn load_wal_entries(wal_path: &Path) -> Result<Vec<WalEntry>, StorageError> 
 /// Malformed identity lines are skipped with an error log instead of discarding
 /// the entire identity log: a foreign-domain record in the file must never wipe
 /// registered DIDs on restart.
+///
+/// # Phone-index rebuild
+///
+/// Entries carrying a persisted `phone_digest` (HMAC, never the raw token)
+/// also populate `phone_index`: the digest is inserted as-is, so replay needs
+/// no PSI secret and raw tokens never touch disk.
 #[must_use]
-pub fn replay_wal_into_log(
+pub fn replay_wal_into_state(
     wal_path: Option<&Path>,
     kt_log: &mut KeyTransparencyLog,
-) -> HashMap<String, IdentityLogEntry> {
+) -> (HashMap<String, IdentityLogEntry>, HashMap<String, String>) {
     let mut did_index = HashMap::new();
+    let mut phone_index = HashMap::new();
     let Some(path) = wal_path else {
-        return did_index;
+        return (did_index, phone_index);
     };
     if !path.exists() {
-        return did_index;
+        return (did_index, phone_index);
     }
     let raw = match fs::read_to_string(path) {
         Ok(raw) => raw,
@@ -134,7 +162,7 @@ pub fn replay_wal_into_log(
             eprintln!(
                 "{{\"level\":\"ERROR\",\"msg\":\"identity wal replay failed\",\"error\":\"{e}\"}}"
             );
-            return did_index;
+            return (did_index, phone_index);
         }
     };
     for line in raw.lines() {
@@ -156,12 +184,16 @@ pub fn replay_wal_into_log(
                         item.did.clone(),
                         IdentityLogEntry {
                             index: idx,
-                            did: item.did,
+                            did: item.did.clone(),
                             key_commitment: item.key_commitment,
                             epoch_secs: item.epoch_secs,
                             leaf_hash,
+                            phone_digest: item.phone_digest.clone(),
                         },
                     );
+                    if let Some(digest) = item.phone_digest.filter(|s| !s.is_empty()) {
+                        phone_index.insert(digest, item.did);
+                    }
                 }
             }
             Err(e) => {
@@ -169,7 +201,20 @@ pub fn replay_wal_into_log(
             }
         }
     }
-    did_index
+    (did_index, phone_index)
+}
+
+/// Replays WAL entries from `wal_path` into `kt_log` and returns the populated `did_index`.
+///
+/// Malformed identity lines are skipped with an error log instead of discarding
+/// the entire identity log: a foreign-domain record in the file must never wipe
+/// registered DIDs on restart.
+#[must_use]
+pub fn replay_wal_into_log(
+    wal_path: Option<&Path>,
+    kt_log: &mut KeyTransparencyLog,
+) -> HashMap<String, IdentityLogEntry> {
+    replay_wal_into_state(wal_path, kt_log).0
 }
 
 /// Point-in-time serializable snapshot of a `sonaraim-node` identity log.
