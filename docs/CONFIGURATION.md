@@ -13,7 +13,7 @@
 | `NODE_ID` | `String` | Yes | Unique logical identifier for this relay node instance. | `node-primary-01` |
 | `NODE_HTTP_HOST` | `String` | Yes | Bind address for the HTTP server (`/health`, `/metrics`, API). | `0.0.0.0` |
 | `NODE_HTTP_PORT` | `u16` | Yes | TCP port for the HTTP server (`1..=65535`). | `8040` |
-| `NODE_P2P_LISTEN_ADDR` | `String` | Yes | `libp2p` multiaddr for QUIC/WebTransport connections (must start with `/`). | `/ip4/0.0.0.0/udp/4001/quic-v1` |
+| `NODE_P2P_LISTEN_ADDR` | `String` | Yes | UDP gossip listen address: `/ip4/<host>/udp/<port>/...` multiaddr or `host:port` (port `0` allowed for ephemeral test binds). Backs the live gossip daemon (`src/gossip_daemon.rs`). TCP-only multiaddrs are rejected. Real QUIC/libp2p transport is NOT implemented; see issue #2 follow-up. | `/ip4/0.0.0.0/udp/4001/quic-v1` |
 | `NODE_ENVELOPE_TTL_SECONDS` | `u64` | Yes | Maximum retention time in seconds for queued envelopes (`> 0`). | `604800` |
 
 ---
@@ -38,7 +38,7 @@
 | `S3_ACCESS_KEY_ID` | `String` | No | S3 access key ID for SigV4 presigning of media uploads. | `minioadmin` |
 | `S3_SECRET_ACCESS_KEY` | `String` | No | S3 secret access key for SigV4 presigning of media uploads. | `miniopassword` |
 | `S3_REGION` | `String` | No | AWS region for the SigV4 signing scope (defaults to `us-east-1`). | `us-east-1` |
-| `NODE_PSI_SERVER_SECRET` | `String` | No | HMAC server secret for PSI token derivation (falls back to `NODE_ID` in dev). | `psi-secret-...` |
+| `NODE_PSI_SERVER_SECRET` | `String` | No | HMAC server secret for PSI token derivation (falls back to `NODE_ID` in dev). Phone bindings persist as HMAC digests in `kt_log.wal` and rebuild `phone_index` on restart — **never rotate this secret without re-registering phone-bound DIDs**, or PSI/`by-phone` lookups for existing bindings stop matching. | `psi-secret-...` |
 | `NODE_STH_SIGNING_SEED` | `String` | No | 64-hex Ed25519 seed for signing gossiped STHs. Stable per node. **WARNING: when unset, a process-local random seed is generated and the STH signer identity ROTATES ON EVERY RESTART (peers cannot pin the signer across restarts).** Set a stable per-node value in production. | `aabbcc... (64 hex chars)` |
 
 ---

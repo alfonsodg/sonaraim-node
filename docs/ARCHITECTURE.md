@@ -82,7 +82,7 @@ Maintains an append-only cryptographic ledger mapping DIDs to public key commitm
 
 ### 3.4 P2P Federation & Live UDP Gossip (`src/p2p.rs`, `src/udp_gossip.rs`)
 
-Nodes federate over QUIC and UDP to synchronize Merkle tree heads:
+Nodes federate over UDP gossip and HTTP replication to synchronize Merkle tree heads (real QUIC/libp2p transport is a tracked follow-up, see node#2):
 
 - **`UdpGossipNode`**: Binds a non-blocking UDP socket (from `NODE_P2P_LISTEN_ADDR`, parsed as `/ip4/<host>/udp/<port>` or `host:port`) to exchange compact JSON `SignedTreeHead` datagrams. `NODE_BOOTSTRAP_PEERS` entries receive an immediate hello head at startup.
 - **Equivocation Detection**: If a peer advertises two conflicting tree heads for the same tree size, an equivocation alert is raised and the peer is flagged as untrusted.

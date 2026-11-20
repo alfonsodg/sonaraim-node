@@ -22,7 +22,7 @@ use crate::psi_service::{
 use crate::push_signals::PushSignalRegistry;
 use crate::redis_store::RedisRespClient;
 use crate::relay::MailboxStore;
-use crate::storage::{replay_wal_into_log, wal_path_from_signing_key};
+use crate::storage::{replay_wal_into_state, wal_path_from_signing_key};
 use crate::udp_gossip::ingest_gossip_json;
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -71,7 +71,7 @@ impl NodeState {
         wal_path: Option<PathBuf>,
         redis: Option<RedisRespClient>,
     ) -> Self {
-        let did_index = replay_wal_into_log(wal_path.as_deref(), &mut kt_log);
+        let (did_index, phone_index) = replay_wal_into_state(wal_path.as_deref(), &mut kt_log);
         let envelope_wal_path = wal_path.as_deref().map(envelope_wal_path_from_identity_wal);
         let mut relay = relay;
         let now = now_secs();
@@ -82,7 +82,7 @@ impl NodeState {
             relay,
             kt_log,
             did_index,
-            phone_index: HashMap::new(),
+            phone_index,
             p2p_mesh,
             wal_path,
             envelope_wal_path,

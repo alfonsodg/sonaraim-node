@@ -4,7 +4,7 @@
 
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Crate: Rust 2021](https://img.shields.io/badge/Crate-Rust%202021-DEA584.svg?logo=rust&logoColor=white)](Cargo.toml)
-[![Network: libp2p + QUIC](https://img.shields.io/badge/Network-libp2p%20%2B%20QUIC-blueviolet.svg)](src/p2p.rs)
+[![Network: UDP Gossip + HTTP Federation](https://img.shields.io/badge/Network-UDP%20Gossip%20%2B%20HTTP%20Federation-blueviolet.svg)](src/p2p.rs)
 [![Ledger: Key Transparency Merkle](https://img.shields.io/badge/Ledger-Key%20Transparency%20Merkle-brightgreen.svg)](src/merkle.rs)
 [![Gossip: UDP Datagram Gossip](https://img.shields.io/badge/Gossip-UDP%20Datagram%20Gossip-yellow.svg)](src/udp_gossip.rs)
 
@@ -16,8 +16,8 @@
 
 - **Sealed Sender Relay (`src/relay.rs`, `src/http_relay.rs`)**: Routes encrypted envelopes exclusively by opaque `mailbox_id` tokens with TTL-bounded retention, protecting sender privacy from transport nodes.
 - **Key Transparency Merkle Log (`src/merkle.rs`, `src/http_identity.rs`)**: Append-only cryptographic ledger tracking `did:sonaraim:` and `did:web:` public key commitments, providing verifiable inclusion proofs.
-- **P2P Federation & Gossip (`src/p2p.rs`, `src/http_federation.rs`)**: Synchronizes peer states and gossips Merkle tree heads across federated nodes over QUIC and HTTP.
-- **Live UDP Gossip Transport (`src/udp_gossip.rs`)**: Low-overhead UDP datagram exchange for `SignedTreeHead` packets with real-time equivocation and split-brain detection.
+- **P2P Federation & Gossip (`src/p2p.rs`, `src/http_federation.rs`)**: Synchronizes peer states and gossips Merkle tree heads across federated nodes over UDP datagrams and HTTP replication (real QUIC/libp2p transport is a tracked follow-up, see issue #2).
+- **Live UDP Gossip Transport (`src/udp_gossip.rs`)**: Low-overhead UDP datagram exchange for signed `SignedTreeHead` packets with real-time equivocation and split-brain detection.
 - **Private Set Intersection (`src/psi_service.rs`)**: Blind contact discovery allowing mobile clients to find registered contacts without exposing unhashed address books.
 - **S3 Upload & WAL Compaction (`src/s3_wal_maintenance.rs`)**: Presigned media upload URL generation and atomic Write-Ahead Log compaction to disk.
 - **Zero-Hardcode Configuration (`src/config.rs`)**: Strict environment variable loading (`NODE_ID`, `NODE_HTTP_HOST`, `NODE_HTTP_PORT`, `NODE_P2P_LISTEN_ADDR`, `NODE_ENVELOPE_TTL_SECONDS`).
@@ -38,7 +38,7 @@ The following ASCII diagram illustrates the internal processing pipelines, stora
 |  - Inbound Sealed Envelopes                 - Merkle Tree Head Gossips (UDP)      |
 |  - Anonymous Mailbox Drains                 - P2P Peer Sync & Proof Audits        |
 |            |                                              |                       |
-|            | HTTP / REST                                  | UDP Gossip / QUIC     |
+|            | HTTP / REST                                  | UDP Gossip / HTTP   |
 |            v                                              v                       |
 |  +-------------------------------------+    +----------------------------------+  |
 |  |     HTTP REST & RELAY DISPATCHER    |    |        P2P GOSSIP TRANSPORT      |  |

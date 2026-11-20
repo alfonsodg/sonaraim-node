@@ -73,11 +73,13 @@ fn wal_append_and_recovery_restores_kt_log_across_node_state_reinit() {
         did: "did:sonaraim:alice".to_string(),
         key_commitment: "ed25519_alice_01".to_string(),
         epoch_secs: 1_700_000_010,
+        phone_digest: None,
     };
     let entry_2 = WalEntry {
         did: "did:web:enterprise.example.com".to_string(),
         key_commitment: "ed25519_ent_02".to_string(),
         epoch_secs: 1_700_000_020,
+        phone_digest: None,
     };
 
     append_wal_entry(&wal_path, &entry_1).expect("append wal 1");

@@ -280,7 +280,11 @@ Returns the verified DID identity entry, signing key commitment, and cryptograph
 
 ### `GET /v1/identity/by-phone/{token}`
 
-Looks up a registered DID by blinded or hashed phone number token.
+Looks up a registered DID by blinded or hashed phone number token. The
+binding is durable: registrations persist the phone HMAC digest in
+`kt_log.wal` (raw tokens never touch disk), federated syncs carry the
+digest in `GET /v1/p2p/sync` `identities[].phone_digest`, and node restarts
+rebuild the phone index from the persisted digest.
 
 **Response (`200 OK`)**:
 
@@ -314,18 +318,35 @@ Returns the latest L2 anchor checkpoint receipt for the Merkle tree head.
 
 ### `GET /v1/p2p/sync`
 
-Returns local Merkle tree size, root hash, and known peer tree heads.
+Returns the node's signed tree head plus the full identity and envelope
+state for peer catch-up. `identities[]` entries carry an optional
+`phone_digest` (HMAC digest, never the raw token) so federated peers
+rebuild their phone index without learning phone numbers.
 
 **Response (`200 OK`)**:
 
 ```json
 {
-  "node_id": "node-primary-01",
-  "tree_size": 13,
-  "tree_head": "e3b0c442...",
-  "peers_count": 2,
-  "peers": [
-    { "peer_id": "node-peer-02", "tree_size": 13, "tree_head": "e3b0c442..." }
+  "tree_head": {
+    "node_id": "node-primary-01",
+    "tree_size": 13,
+    "root_hash": "e3b0c442...",
+    "signer_pubkey_hex": "4a5b6c...",
+    "signature_hex": "9c8d..."
+  },
+  "identities": [
+    {
+      "did": "did:sonaraim:alice",
+      "key_commitment": "ed25519:...",
+      "phone_digest": "e3b0c44298fc1c14..."
+    }
+  ],
+  "envelopes": [
+    {
+      "envelope_id": "env-1",
+      "recipient_mailbox_id": "did:sonaraim:alice",
+      "payload_hex": "cafebabe"
+    }
   ]
 }
 ```
