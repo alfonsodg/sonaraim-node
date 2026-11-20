@@ -96,25 +96,15 @@ pub fn document_matches_did(did: &str, doc_json: &str) -> bool {
     if !did.starts_with("did:web:") {
         return false;
     }
-    let normalized = doc_json.replace("\\\"", "\"");
-    let Some(doc_id) = crate::storage::extract_json_str(&normalized, "id") else {
+    let Some(doc_id) = crate::storage::extract_json_str(doc_json, "id") else {
         return false;
     };
     if doc_id != did {
         return false;
     }
-    let Some(vm_pos) = normalized.find("\"verificationMethod\"") else {
-        return false;
-    };
-    let rest = &normalized[vm_pos..];
-    let Some(open_bracket) = rest.find('[') else {
-        return false;
-    };
-    let after_open = &rest[open_bracket + 1..];
-    let Some(close_bracket) = after_open.find(']') else {
-        return false;
-    };
-    !after_open[..close_bracket].trim().is_empty()
+    // Non-empty `verificationMethod` array, matched structurally: `]` inside
+    // quoted strings no longer truncates the check.
+    crate::json::json_array_nonempty(doc_json, "verificationMethod")
 }
 
 /// Resolves `did` over the network and reports whether it verifies.

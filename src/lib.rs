@@ -17,6 +17,7 @@ pub mod http_federation;
 pub mod http_identity;
 pub mod http_relay;
 pub mod http_server;
+pub mod json;
 pub mod merkle;
 pub mod p2p;
 pub mod psi_service;
